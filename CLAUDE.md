@@ -139,7 +139,7 @@ The two Gateway API modules move as one Renovate PR, grouped in `renovate.json`.
 
 ### Cloudflared Fork
 
-The project uses a fork of cloudflared: `github.com/lexfrei/cloudflared` (via `replace` directive in `go.mod`).
+The project uses a fork of cloudflared: `github.com/miriel-ai/cloudflared` (via `replace` directive in `go.mod`).
 
 **Why:** The v2 in-process proxy needs to inject a custom `OriginProxy` into cloudflared's `Orchestrator`. Upstream cloudflared doesn't expose this capability, so the fork adds an `OverrideProxy` field to `Orchestrator` and modifies `GetOriginProxy()` to return it when set.
 
@@ -147,12 +147,12 @@ The project uses a fork of cloudflared: `github.com/lexfrei/cloudflared` (via `r
 
 **Fork maintenance:**
 
-- Fork repo: `github.com/lexfrei/cloudflared`, branch `master`
+- Fork repo: `github.com/miriel-ai/cloudflared`, branch `miriel` (rebased from `lexfrei/cloudflared`; both patches are offered upstream as cloudflare/cloudflared#1804 and #1805)
 - Base: upstream cloudflare/cloudflared at a pinned commit
 - Patches: two commits — `OverrideProxy` field in `orchestration/orchestrator.go` (custom OriginProxy injection) and `Observer.Close` in `connection/observer.go` (stop the dispatch goroutine and release sinks between bootstrap attempts)
 - **NEVER patch vendor directly** — always update the fork and re-vendor
 - When upgrading cloudflared version: rebase fork's master onto new upstream tag/commit, re-apply the patches, update `replace` directive and pseudo-version in `go.mod`, then `go mod tidy && go mod vendor`
-- **Rebase cadence: monthly, or on any notable upstream cloudflared release.** Renovate bumps only the `require` digest, which the `replace` directive overrides — a Renovate bump is the signal that the fork is stale, not a real upgrade. Keep `require` and `replace` on the same upstream base so the pins do not mislead. `renovate.json` sets `automerge: false` on that `require` bump (and on the equivalent `quic-go/quic-go` and `chungthuang/quic-go` entries behind the second `replace`), so the signal still arrives as a PR but nothing merges itself — read `go.mod`'s `FIXME(#610)` comments before merging any of the three by hand. Renovate is disabled entirely for `github.com/lexfrei/cloudflared`, the fork's own replace target: that pin only ever moves through the rebase described above, never through an automated bump
+- **Rebase cadence: monthly, or on any notable upstream cloudflared release.** Renovate bumps only the `require` digest, which the `replace` directive overrides — a Renovate bump is the signal that the fork is stale, not a real upgrade. Keep `require` and `replace` on the same upstream base so the pins do not mislead. `renovate.json` sets `automerge: false` on that `require` bump (and on the equivalent `quic-go/quic-go` and `chungthuang/quic-go` entries behind the second `replace`), so the signal still arrives as a PR but nothing merges itself — read `go.mod`'s `FIXME(#610)` comments before merging any of the three by hand. Renovate is disabled entirely for `github.com/miriel-ai/cloudflared`, the fork's own replace target: that pin only ever moves through the rebase described above, never through an automated bump
 - **Sync the quic-go pin on every rebase**: our `replace github.com/quic-go/quic-go` line mirrors upstream cloudflared's own replace verbatim and only moves together with the fork rebase — diff the two lines as part of every rebase and never repoint ours alone.
 - **Canary tests post-rebase**: `TestVendoredCloudflaredUpgradeConstantsPinned` (`internal/tunnel/origin_vendor_drift_test.go`) fails loudly if the WebSocket signalling header / token constants drift. If it fires, audit `internal/tunnel/origin.go` `GatewayOriginProxy.ProxyHTTP` and any sibling behavioural tests (notably `TestGatewayOriginProxy_ProxyHTTP_WebSocketReinjectsHeaders`) before re-pinning the constants.
 

@@ -31,7 +31,7 @@ Expose in-cluster services through a Cloudflare Tunnel using standard Gateway AP
 
 ## L7 Proxy
 
-The controller runs an in-process L7 reverse proxy inside the cloudflared process via the `OverrideProxy` hook (using a [fork of cloudflared](https://github.com/lexfrei/cloudflared)). All tunnel traffic is intercepted by the proxy, which applies Gateway API routing rules — hostname, path, header, query and method matching, filters, and weighted backend selection — before forwarding to backends. The tunnel ingress document the controller writes through the Cloudflare API only feeds the Cloudflare dashboard; request routing is handled entirely by the proxy, so HTTPRoute features work end-to-end regardless of Cloudflare Tunnel's native capabilities.
+The controller runs an in-process L7 reverse proxy inside the cloudflared process via the `OverrideProxy` hook (using a [fork of cloudflared](https://github.com/miriel-ai/cloudflared)). All tunnel traffic is intercepted by the proxy, which applies Gateway API routing rules — hostname, path, header, query and method matching, filters, and weighted backend selection — before forwarding to backends. The tunnel ingress document the controller writes through the Cloudflare API only feeds the Cloudflare dashboard; request routing is handled entirely by the proxy, so HTTPRoute features work end-to-end regardless of Cloudflare Tunnel's native capabilities.
 
 See [L7 Proxy Architecture](https://cf.k8s.lex.la/latest/development/architecture/) for full details.
 

@@ -202,7 +202,7 @@ Use the fake from the start of design — not as a last-mile add-on during local
 
 ### Re-vendoring discipline
 
-When bumping the `lexfrei/cloudflared` fork (see CLAUDE.md `Cloudflared Fork`), re-verify each contract row in the table above against the new vendored sources. The fake's behaviour is pinned to the snapshot of cloudflared at fake-authoring time; an upstream rename or semantic change is silent until detected by hand. Tests that string-match the cloudflared error message ALSO won't catch drift because they assert against the fake's own copy of the string.
+When bumping the `miriel-ai/cloudflared` fork (see CLAUDE.md `Cloudflared Fork`), re-verify each contract row in the table above against the new vendored sources. The fake's behaviour is pinned to the snapshot of cloudflared at fake-authoring time; an upstream rename or semantic change is silent until detected by hand. Tests that string-match the cloudflared error message ALSO won't catch drift because they assert against the fake's own copy of the string.
 
 Fix-up points to re-verify on every cloudflared rebase — at least one per contract row in the table above, in the same order:
 

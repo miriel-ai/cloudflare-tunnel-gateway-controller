@@ -183,8 +183,8 @@ github.com/cloudflare/cloudflare-go/v7/workflows
 github.com/cloudflare/cloudflare-go/v7/zaraz
 github.com/cloudflare/cloudflare-go/v7/zero_trust
 github.com/cloudflare/cloudflare-go/v7/zones
-# github.com/cloudflare/cloudflared v0.0.0-20261005153913-18cdfe0a6fc7 => github.com/lexfrei/cloudflared v0.0.0-20261010230028-a0aabd9711e7
-## explicit; go 1.26
+# github.com/cloudflare/cloudflared v0.0.0-20261117132858-518d7f7969b7 => github.com/miriel-ai/cloudflared v0.0.0-20261117161159-ff637d32000a
+## explicit; go 1.27.4
 github.com/cloudflare/cloudflared/carrier
 github.com/cloudflare/cloudflared/cfapi
 github.com/cloudflare/cloudflared/cfio
@@ -199,7 +199,6 @@ github.com/cloudflare/cloudflared/datagramsession
 github.com/cloudflare/cloudflared/edgediscovery
 github.com/cloudflare/cloudflared/edgediscovery/allregions
 github.com/cloudflare/cloudflared/features
-github.com/cloudflare/cloudflared/fips
 github.com/cloudflare/cloudflared/flow
 github.com/cloudflare/cloudflared/hello
 github.com/cloudflare/cloudflared/ingress
@@ -319,8 +318,8 @@ github.com/getsentry/sentry-go/internal/ratelimit
 github.com/getsentry/sentry-go/internal/telemetry
 github.com/getsentry/sentry-go/internal/util
 github.com/getsentry/sentry-go/report
-# github.com/go-chi/chi/v5 v5.3.1
-## explicit; go 1.23
+# github.com/go-chi/chi/v5 v5.5.0
+## explicit; go 1.24
 github.com/go-chi/chi/v5
 # github.com/go-chi/cors v1.2.1
 ## explicit; go 1.14
@@ -449,7 +448,7 @@ github.com/inconshreveable/mousetrap
 # github.com/json-iterator/go v1.1.12
 ## explicit; go 1.12
 github.com/json-iterator/go
-# github.com/klauspost/compress v1.20.2
+# github.com/klauspost/compress v1.20.3
 ## explicit; go 1.25
 github.com/klauspost/compress/flate
 github.com/klauspost/compress/internal/le
@@ -1577,5 +1576,5 @@ zombiezen.com/go/capnproto2/rpc/internal/refcount
 zombiezen.com/go/capnproto2/schemas
 zombiezen.com/go/capnproto2/server
 zombiezen.com/go/capnproto2/std/capnp/rpc
-# github.com/cloudflare/cloudflared => github.com/lexfrei/cloudflared v0.0.0-20261010230028-a0aabd9711e7
+# github.com/cloudflare/cloudflared => github.com/miriel-ai/cloudflared v0.0.0-20261117161159-ff637d32000a
 # github.com/quic-go/quic-go => github.com/chungthuang/quic-go v0.45.1-0.20260529212404-a9fddf436fc4
