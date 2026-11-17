@@ -274,7 +274,7 @@ flowchart LR
 
 ## L7 Proxy Data Plane
 
-An in-process L7 proxy is embedded inside cloudflared via the `OverrideProxy` hook (using a [fork of cloudflared](https://github.com/lexfrei/cloudflared)). All tunnel traffic is intercepted by the proxy, which applies Gateway API routing rules before forwarding to backends. This removes most Cloudflare Tunnel ingress API limitations.
+An in-process L7 proxy is embedded inside cloudflared via the `OverrideProxy` hook (using a [fork of cloudflared](https://github.com/miriel-ai/cloudflared)). All tunnel traffic is intercepted by the proxy, which applies Gateway API routing rules before forwarding to backends. This removes most Cloudflare Tunnel ingress API limitations.
 
 ```mermaid
 flowchart TB
@@ -337,5 +337,5 @@ For detailed proxy internals, see [Proxy Architecture](proxy-architecture.md).
 - `sigs.k8s.io/controller-runtime` - Kubernetes controller framework
 - `sigs.k8s.io/gateway-api` - Gateway API types
 - `github.com/cloudflare/cloudflare-go/v7` - Cloudflare API client
-- `github.com/lexfrei/cloudflared` - Cloudflare tunnel daemon (fork with OverrideProxy)
+- `github.com/miriel-ai/cloudflared` - Cloudflare tunnel daemon (fork with OverrideProxy)
 - `github.com/cockroachdb/errors` - Error wrapping

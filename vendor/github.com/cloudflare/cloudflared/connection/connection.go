@@ -24,7 +24,8 @@ const (
 	lbProbeUserAgentPrefix = "Mozilla/5.0 (compatible; Cloudflare-Traffic-Manager/1.0; +https://www.cloudflare.com/traffic-manager/;"
 	LogFieldConnIndex      = "connIndex"
 	MaxGracePeriod         = time.Minute * 3
-	MaxConcurrentStreams   = math.MaxUint32
+	// Go 1.27 defaults limits above MaxInt32 to 250 concurrent streams.
+	MaxConcurrentStreams = math.MaxInt32
 
 	contentTypeHeader      = "content-type"
 	contentLengthHeader    = "content-length"
@@ -110,7 +111,8 @@ type ClassicTunnelProperties struct {
 	UseReconnectToken bool
 }
 
-// Type indicates the connection type of the  connection.
+// Type identifies the traffic or control operation carried by an
+// edge-to-cloudflared request.
 type Type int
 
 const (

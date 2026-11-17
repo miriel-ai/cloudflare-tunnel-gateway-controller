@@ -114,12 +114,12 @@
       "groupName": null
     },
     {
-      "description": "github.com/lexfrei/cloudflared is our cloudflared fork; its replace-target pin moves by hand through a deliberate rebase (CLAUDE.md 'Cloudflared Fork' section), never through Renovate",
+      "description": "github.com/miriel-ai/cloudflared is our cloudflared fork; its replace-target pin moves by hand through a deliberate rebase (CLAUDE.md 'Cloudflared Fork' section), never through Renovate",
       "matchManagers": [
         "gomod"
       ],
       "matchPackageNames": [
-        "github.com/lexfrei/cloudflared"
+        "github.com/miriel-ai/cloudflared"
       ],
       "enabled": false
     },

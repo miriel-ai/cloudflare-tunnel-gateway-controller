@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	cel.dev/cel-go v0.32.0
 	github.com/cloudflare/cloudflare-go/v7 v7.12.0
-	github.com/cloudflare/cloudflared v0.0.0-20261005153913-18cdfe0a6fc7 // decorative, see replace + FIXME(#610) below
+	github.com/cloudflare/cloudflared v0.0.0-20261117132858-518d7f7969b7 // decorative, see replace + FIXME(#610) below
 	github.com/cockroachdb/errors v1.14.0
 	github.com/go-logr/logr v1.4.4
 	github.com/google/uuid v1.6.0
@@ -62,7 +62,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
 	github.com/getsentry/sentry-go v0.46.0 // indirect
-	github.com/go-chi/chi/v5 v5.3.1 // indirect
+	github.com/go-chi/chi/v5 v5.5.0 // indirect
 	github.com/go-chi/cors v1.2.1 // indirect
 	github.com/go-errors/errors v1.5.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
@@ -95,7 +95,7 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.20.2 // indirect
+	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
@@ -172,11 +172,11 @@ require (
 // (no version on its left side) wins regardless of what version that line names.
 // The real upgrade path is a deliberate rebase (see CLAUDE.md "Cloudflared Fork"
 // -> Fork maintenance), never a bare version bump here. Renovate is disabled for
-// this replace target (github.com/lexfrei/cloudflared) in renovate.json so it
+// this replace target (github.com/miriel-ai/cloudflared) in renovate.json so it
 // can't repoint this pin to an arbitrary newer commit on its own; the require
 // line above still gets Renovate PRs, and those are the intended signal that a
 // rebase is due, not something to merge as-is.
-replace github.com/cloudflare/cloudflared => github.com/lexfrei/cloudflared v0.0.0-20261010230028-a0aabd9711e7
+replace github.com/cloudflare/cloudflared => github.com/miriel-ai/cloudflared v0.0.0-20261117161159-ff637d32000a
 
 // This pin mirrors cloudflared's own replace line verbatim and only ever moves
 // together with the fork rebase above - never repoint it alone.

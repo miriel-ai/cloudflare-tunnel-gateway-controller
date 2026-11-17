@@ -23,7 +23,6 @@ import (
 	"github.com/cloudflare/cloudflared/edgediscovery"
 	"github.com/cloudflare/cloudflared/edgediscovery/allregions"
 	"github.com/cloudflare/cloudflared/features"
-	"github.com/cloudflare/cloudflared/fips"
 	"github.com/cloudflare/cloudflared/ingress"
 	"github.com/cloudflare/cloudflared/ingress/origins"
 	"github.com/cloudflare/cloudflared/management"
@@ -88,6 +87,15 @@ func (c *TunnelConfig) connectionOptions(originLocalAddr string, previousAttempt
 
 func (c *TunnelConfig) connectionFeatures() features.FeatureSnapshot {
 	return c.ClientConfig.ConnectionFeaturesSnapshot()
+}
+
+// QUICConfigOptions returns the edge transport settings shared with prechecks.
+func (c *TunnelConfig) QUICConfigOptions() connection.QUICConfigOptions {
+	return connection.QUICConfigOptions{
+		DisablePathMTUDiscovery:    c.DisableQUICPathMTUDiscovery,
+		MaxConnectionReceiveWindow: c.QUICConnectionLevelFlowControlLimit,
+		MaxStreamReceiveWindow:     c.QUICStreamLevelFlowControlLimit,
+	}
 }
 
 func StartTunnelDaemon(
@@ -250,6 +258,10 @@ func (e *EdgeTunnelServer) Serve(ctx context.Context, connIndex uint8, protocolF
 		// The parent context owns shutdown. Skip address rotation, fallback, and
 		// retry policy once it has canceled this connection attempt.
 		return err
+	}
+	if errors.Is(err, connection.ErrRegionChanged) {
+		// The supervisor owns restarting all HA connections.
+		return connection.ErrRegionChanged
 	}
 	if err == nil {
 		// The connection completed gracefully, so there is nothing to retry.
@@ -424,6 +436,11 @@ func (e *EdgeTunnelServer) serveTunnel(
 			// classify an expected shutdown as a connection failure.
 			return err, false
 		}
+		if errors.Is(err, connection.ErrRegionChanged) {
+			// This is a requested restart, not a connection failure. The QUIC
+			// adapter translates the edge's application-close code to the sentinel.
+			return connection.ErrRegionChanged, false
+		}
 		if errors.Is(err, connection.ErrDuplicateConnection) {
 			connLog.ConnAwareLogger().Err(err).Msg("Unable to establish connection.")
 			// don't retry this connection anymore, let supervisor pick a new address
@@ -578,26 +595,8 @@ func (e *EdgeTunnelServer) serveQUIC(
 
 	connLogger.Logger().Info().Msgf("Tunnel connection curve preferences: %v", config.CurvePreferences)
 
-	// quic-go 0.44 increases the initial packet size to 1280 by default. That breaks anyone running tunnel through WARP
-	// because WARP MTU is 1280.
-	var initialPacketSize uint16 = 1252
-	if edgeAddr.Addr().Is4() {
-		initialPacketSize = 1232
-	}
-
-	quicConfig := &quic.Config{
-		HandshakeIdleTimeout:       quicpogs.HandshakeIdleTimeout,
-		MaxIdleTimeout:             quicpogs.MaxIdleTimeout,
-		KeepAlivePeriod:            quicpogs.MaxIdlePingPeriod,
-		MaxIncomingStreams:         quicpogs.MaxIncomingStreams,
-		MaxIncomingUniStreams:      quicpogs.MaxIncomingStreams,
-		EnableDatagrams:            true,
-		Tracer:                     quicpogs.NewClientTracer(connLogger.Logger(), connIndex),
-		DisablePathMTUDiscovery:    e.config.DisableQUICPathMTUDiscovery,
-		MaxConnectionReceiveWindow: e.config.QUICConnectionLevelFlowControlLimit,
-		MaxStreamReceiveWindow:     e.config.QUICStreamLevelFlowControlLimit,
-		InitialPacketSize:          initialPacketSize,
-	}
+	quicConfig := connection.NewQUICConfig(edgeAddr, e.config.QUICConfigOptions())
+	quicConfig.Tracer = quicpogs.NewClientTracer(connLogger.Logger(), connIndex)
 
 	// Dial the QUIC connection to the edge
 	conn, err := connection.DialQuic(
@@ -663,7 +662,26 @@ func (e *EdgeTunnelServer) serveQUIC(
 	)
 
 	// Serve the TunnelConnection
-	return tunnelConn.Serve(ctx), false
+	err = tunnelConn.Serve(ctx)
+	return mapQUICCloseError(err), false
+}
+
+// mapQUICCloseError translates recognized edge-initiated QUIC close codes
+// into transport-independent errors. Other errors are returned unchanged.
+// Preserve unrecognized errors, including wrappers, so existing retry and
+// address-selection policies can still classify them.
+func mapQUICCloseError(err error) error {
+	quicErr, ok := errors.AsType[*quic.ApplicationError](err)
+	if !ok || !quicErr.Remote {
+		return err
+	}
+
+	switch quicErr.ErrorCode {
+	case connection.RegionChangeQUICCode:
+		return connection.ErrRegionChanged
+	default:
+		return err
+	}
 }
 
 // The reportErrorToSentry is an helper function that handles
@@ -676,10 +694,9 @@ func (e *EdgeTunnelServer) reportErrorToSentry(err error, pqMode features.PostQu
 		transportErr, ok := dialErr.Cause.(*quic.TransportError)
 		if ok &&
 			transportErr.ErrorCode.IsCryptoError() &&
-			fips.IsFipsEnabled() &&
 			pqMode == features.PostQuantumStrict {
-			// Only report to Sentry when using FIPS, PQ,
-			// and the error is a Crypto error reported by
+			// Only report to Sentry when using strict PQ and the error
+			// is a Crypto error reported by
 			// an EdgeQuicDialError
 			sentry.CaptureException(err)
 		}
