@@ -160,6 +160,21 @@ func (r *ProxySecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 
 		if err := r.patchRevision(ctx, dep, revision); err != nil {
+			// Forbidden means the Deployment is not ours by RBAC: under the
+			// namespace-scoped grants (MIR-1607) patch is resourceNames-scoped
+			// to this release's proxy, while the label selector still matches
+			// every release's proxy sharing the namespace. Skip it — its own
+			// release's controller rolls it — instead of aborting the loop,
+			// which could permanently starve OUR proxy of its rotation roll
+			// whenever the foreign Deployment sorts first. Anything else is a
+			// real failure and propagates for retry.
+			if apierrors.IsForbidden(err) {
+				logger.Info("skipping a proxy Deployment this controller may not patch (another release's, by RBAC)",
+					"deployment", dep.Namespace+"/"+dep.Name)
+
+				continue
+			}
+
 			return ctrl.Result{}, errors.Wrapf(err, "patch Deployment %s/%s", dep.Namespace, dep.Name)
 		}
 

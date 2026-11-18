@@ -73,7 +73,11 @@ perGatewayDataPlanes:
   # namespace plus `extraSecretNamespaces`) with the controller's cache scoped
   # to match, and a Gateway requesting a dedicated plane is refused with
   # Accepted=False/PerGatewayDataPlanesDisabled instead of silently never
-  # working.
+  # working. Tear existing dedicated planes down BEFORE disabling (delete the
+  # opted-in Gateways, or remove their parametersRef while the feature is
+  # still on): with the write RBAC withdrawn the controller cannot remove a
+  # leftover plane, which keeps serving its last-pushed routes — the
+  # controller logs an Error for each one it finds at startup.
   enabled: true
   # -- (list) Namespaces, beyond the release namespace, the controller may
   # read Secrets in when `enabled` is false: Cloudflare credentials Secrets

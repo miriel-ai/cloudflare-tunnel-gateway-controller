@@ -304,6 +304,11 @@ func Run(ctx context.Context, cfg *Config) error {
 				&corev1.Secret{}: {Namespaces: namespaces},
 			},
 		}
+		// An out-of-scope cached read must be a deterministic NotFound-style
+		// refusal of the reference, isolated to the Gateway/route that made
+		// it — not the cache's plain error, which every consumer would treat
+		// as transient and retry forever (see newSecretScopeClient).
+		mgrOptions.NewClient = newSecretScopeClient
 
 		logger.Info("secret cache scoped to explicit namespaces",
 			"namespaces", slices.Sorted(maps.Keys(namespaces)))
@@ -397,6 +402,13 @@ func Run(ctx context.Context, cfg *Config) error {
 
 	if gatewayInfraReconciler == nil {
 		logger.Info("per-Gateway data planes disabled; Gateways requesting one are refused")
+
+		// A plane rendered BEFORE the feature was disabled cannot be torn
+		// down any more and keeps serving its last-pushed routes — the
+		// operator must hear about each one (see addLeftoverPlaneWarning).
+		if err := addLeftoverPlaneWarning(mgr); err != nil {
+			return err
+		}
 	}
 
 	// Create shared route syncer for unified HTTP and GRPC route synchronization
@@ -774,9 +786,15 @@ func secretCacheNamespaces(configured []string) map[string]cache.Config {
 	namespaces := make(map[string]cache.Config, len(configured)+1)
 	namespaces[getControllerNamespace()] = cache.Config{}
 
-	for _, namespace := range configured {
-		if trimmed := strings.TrimSpace(namespace); trimmed != "" {
-			namespaces[trimmed] = cache.Config{}
+	// Each entry is comma-split as well: CF_SECRET_NAMESPACES=a,b reaches
+	// viper's GetStringSlice as the ONE element "a,b" (env strings split on
+	// whitespace, not commas), and a cache told to watch the literal
+	// namespace "a,b" would never synchronise under the namespaced RBAC.
+	for _, entry := range configured {
+		for namespace := range strings.SplitSeq(entry, ",") {
+			if trimmed := strings.TrimSpace(namespace); trimmed != "" {
+				namespaces[trimmed] = cache.Config{}
+			}
 		}
 	}
 

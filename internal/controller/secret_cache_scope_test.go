@@ -23,4 +23,13 @@ func TestSecretCacheNamespaces(t *testing.T) {
 	assert.Contains(t, scoped, "tenant-a")
 	assert.Contains(t, scoped, "tenant-b", "entries are trimmed, not dropped")
 	assert.Contains(t, scoped, "cf-system", "the controller's own namespace is always included")
+
+	// CF_SECRET_NAMESPACES=a,b reaches viper's GetStringSlice as ONE element
+	// (env strings split on whitespace, not commas), so each entry must be
+	// comma-split here too — otherwise the cache would try to watch the
+	// literal namespace "a,b" and never synchronise under the namespaced RBAC.
+	env := secretCacheNamespaces([]string{"tenant-a,tenant-b"})
+	assert.Len(t, env, 3)
+	assert.Contains(t, env, "tenant-a", "comma-joined env values must split into namespaces")
+	assert.Contains(t, env, "tenant-b")
 }

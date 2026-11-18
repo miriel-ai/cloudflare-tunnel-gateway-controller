@@ -432,18 +432,21 @@ func (r *GatewayReconciler) refuseDisabledDedicatedPlane(
 		return ctrl.Result{}, false, nil
 	}
 
-	r.reportPlanesDisabledRefusal(ctx, gateway)
-
-	// No requeue: only a spec edit or a controller restart with the flag
-	// flipped — both events of their own — can change the verdict.
-	return ctrl.Result{}, true, nil
+	// No requeue on success: only a spec edit or a controller restart with
+	// the flag flipped — both events of their own — can change the verdict. A
+	// failed status write IS returned, though: swallowing it would leave the
+	// Gateway with no condition at all and nothing scheduled to retry, so the
+	// operator's only trace of the refusal would be one controller log line.
+	return ctrl.Result{}, true, r.reportPlanesDisabledRefusal(ctx, gateway)
 }
 
 // reportPlanesDisabledRefusal makes the refusal impossible to miss: an Error
 // log, a Warning Event, and Accepted=False/PerGatewayDataPlanesDisabled with
 // the remedy in the message. Same report-once shape as the quota refusal: the
 // condition is what persists, so log and Event only when the verdict is new.
-func (r *GatewayReconciler) reportPlanesDisabledRefusal(ctx context.Context, gateway *gatewayv1.Gateway) {
+// A failed condition write is returned for the caller to propagate (backoff
+// retry), not merely logged.
+func (r *GatewayReconciler) reportPlanesDisabledRefusal(ctx context.Context, gateway *gatewayv1.Gateway) error {
 	logger := log.FromContext(ctx)
 	err := planesDisabledError()
 
@@ -457,9 +460,7 @@ func (r *GatewayReconciler) reportPlanesDisabledRefusal(ctx context.Context, gat
 		}
 	}
 
-	if statusErr := r.setConfigErrorStatus(ctx, gateway, err); statusErr != nil {
-		logger.Error(statusErr, "failed to update gateway status")
-	}
+	return errors.Wrap(r.setConfigErrorStatus(ctx, gateway, err), "writing the disabled-planes refusal status")
 }
 
 // planesDisabledError builds the error the refusal is reported through.
