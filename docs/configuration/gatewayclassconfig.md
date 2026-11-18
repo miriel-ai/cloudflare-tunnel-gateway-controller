@@ -121,7 +121,7 @@ stringData:
 
 ## No-API mode
 
-Leave `spec.cloudflareCredentialsSecretRef` unset and the controller makes **no Cloudflare API calls at all**. The cluster then holds only the tunnel's connector token (`proxy.tunnelTokenSecretRef`), which can run that one tunnel and nothing else — no account-wide credential ever reaches the cluster.
+Leave `spec.cloudflareCredentialsSecretRef` unset and the controller makes **no Cloudflare API calls for the shared data plane**. With no `GatewayConfig` credential override anywhere (the common case — see the last bullet), that is no API calls at all: the cluster holds only the tunnel's connector token (`proxy.tunnelTokenSecretRef`), which can run that one tunnel and nothing else, and no account-wide credential ever reaches it.
 
 ```yaml
 apiVersion: cf.k8s.lex.la/v1alpha1
@@ -138,9 +138,9 @@ What this changes, and what it does not:
 - **Routing is unaffected.** The [in-process L7 proxy](../guides/l7-proxy.md) serves every request from the pushed HTTPRoute/GRPCRoute configuration; the tunnel ingress document the API would be used for only feeds the Cloudflare dashboard. Gateways go `Accepted`/`Programmed`, publish their `<tunnelID>.cfargotunnel.com` address, and routes are matched and filtered exactly as with credentials.
 - **The tunnel ingress document is not managed.** Whatever the dashboard shows is whoever owns the tunnel's business — typically the central system that created the tunnel. The Gateway's `Programmed` condition message says so (`the tunnel ingress document is not managed`).
 - **The account ID is never needed.** `spec.accountId` may stay unset; nothing is auto-detected because nothing is called.
-- **Per-Gateway dedicated data planes are refused** (`Accepted=False`, reason `InvalidParameters`) unless their `GatewayConfig` carries its own `cloudflareCredentialsSecretRef`: a dedicated plane's tunnel claim is [verified against Cloudflare](../guides/per-gateway-isolation.md) before its document is written, and with no credential there is nothing to verify with. The shared data plane is unaffected.
+- **Per-Gateway dedicated data planes are refused** (`Accepted=False`, reason `InvalidParameters`) unless their `GatewayConfig` carries its own `cloudflareCredentialsSecretRef`: a dedicated plane's tunnel claim is [verified against Cloudflare](../guides/per-gateway-isolation.md) before its document is written, and with no credential there is nothing to verify with. The shared data plane is unaffected. Note that a plane which does carry an override is **not** covered by the no-API guarantee: its credential sits in its namespace, its tunnel claim is checked against Cloudflare, and its tunnel's ingress document is written as in API mode.
 
-Use this when a central authority owns the tunnel, its configuration and DNS, and the cluster should hold no credential that can read or write other tunnels in the account. The owner should leave a catch-all rule (for example `http_status:404`) in the tunnel's remote configuration — Cloudflare requires one — and need never update it as routes change.
+Use this when a central authority owns the tunnel, its configuration and DNS, and the cluster should hold no credential that can read or write other tunnels in the account — which also means supplying no `GatewayConfig` credential overrides. The owner should leave a catch-all rule (for example `http_status:404`) in the tunnel's remote configuration — Cloudflare requires one — and need never update it as routes change.
 
 ## Proxy configuration
 

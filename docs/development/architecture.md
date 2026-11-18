@@ -75,7 +75,7 @@ Cluster-scoped Custom Resource Definition (CRD) that provides tunnel configurati
 
 - **API Group**: `cf.k8s.lex.la/v1alpha1`
 - **Referenced by**: GatewayClass via `spec.parametersRef`
-- **Spec fields**: `tunnelID`, optional `cloudflareCredentialsSecretRef` (omitted = no-API mode: no Cloudflare API calls, the tunnel ingress document is left unmanaged) and optional `accountId`. Proxy-side configuration (tunnel token, replicas, etc.) lives in Helm chart `proxy.*` values.
+- **Spec fields**: `tunnelID`, optional `cloudflareCredentialsSecretRef` (omitted = no-API mode: the shared plane makes no Cloudflare API calls and its tunnel ingress document is left unmanaged; a per-Gateway plane needs its own `GatewayConfig` credential or is refused) and optional `accountId`. Proxy-side configuration (tunnel token, replicas, etc.) lives in Helm chart `proxy.*` values.
 
 ```yaml
 apiVersion: cf.k8s.lex.la/v1alpha1

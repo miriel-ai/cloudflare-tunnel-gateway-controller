@@ -27,13 +27,13 @@ Expose in-cluster services through a Cloudflare Tunnel using standard Gateway AP
 - Leader election for high-availability deployments
 - Multi-arch images (amd64, arm64), signed with cosign
 
-> **Warning:** The controller assumes **exclusive ownership** of the tunnel configuration. It removes any ingress rules not managed by HTTPRoute/GRPCRoute resources. Do not point it at a tunnel that has manually configured routes or is shared with other systems. (In no-API mode the controller never touches the tunnel configuration, so this does not apply.)
+> **Warning:** The controller assumes **exclusive ownership** of the tunnel configuration. It removes any ingress rules not managed by HTTPRoute/GRPCRoute resources. Do not point it at a tunnel that has manually configured routes or is shared with other systems. (This applies wherever the controller holds a credential for the tunnel; a tunnel whose plane has none — the shared plane in no-API mode — is never touched.)
 
 ## L7 Proxy
 
 The controller runs an in-process L7 reverse proxy inside the cloudflared process via the `OverrideProxy` hook (using a [fork of cloudflared](https://github.com/lexfrei/cloudflared)). All tunnel traffic is intercepted by the proxy, which applies Gateway API routing rules — hostname, path, header, query and method matching, filters, and weighted backend selection — before forwarding to backends. The tunnel ingress document the controller writes through the Cloudflare API only feeds the Cloudflare dashboard; request routing is handled entirely by the proxy, so HTTPRoute features work end-to-end regardless of Cloudflare Tunnel's native capabilities.
 
-Because of that, the API credential itself is optional: omit `cloudflareCredentialsSecretRef` and the controller runs in [no-API mode](https://cf.k8s.lex.la/latest/configuration/gatewayclassconfig/#no-api-mode) — no Cloudflare API calls at all, the cluster holds only the connector token, and the dashboard-only ingress document is left to whoever owns the tunnel. Per-Gateway dedicated data planes still need a credential (theirs can come from their own `GatewayConfig`) because tunnel-ownership claims are verified against Cloudflare.
+Because of that, the API credential itself is optional: omit `cloudflareCredentialsSecretRef` and the controller runs in [no-API mode](https://cf.k8s.lex.la/latest/configuration/gatewayclassconfig/#no-api-mode) — the shared data plane makes no Cloudflare API calls, needs nothing beyond its connector token, and its dashboard-only ingress document is left to whoever owns the tunnel. Per-Gateway dedicated data planes still need a credential, because tunnel-ownership claims are verified against Cloudflare: one that supplies its own through its `GatewayConfig` keeps that credential in the cluster and keeps making API calls for its claim checks and document writes; one that supplies none is refused. Only a cluster with no `GatewayConfig` credential overrides makes no API calls at all.
 
 See [L7 Proxy Architecture](https://cf.k8s.lex.la/latest/development/architecture/) for full details.
 
@@ -123,7 +123,7 @@ Create an API token at [Cloudflare API Tokens](https://dash.cloudflare.com/profi
 
 Account ID is auto-detected from the API token when not explicitly provided (works if the token has access to a single account).
 
-The token is optional. Skip it (and omit `cloudflareCredentialsSecretRef`) to run in no-API mode: routing is unaffected, the controller just stops maintaining the dashboard-only tunnel ingress document. Use it when a central system owns the tunnel's configuration and the cluster should hold nothing stronger than its own connector token.
+The token is optional. Skip it (and omit `cloudflareCredentialsSecretRef`) to run in no-API mode: routing is unaffected, the controller just stops maintaining the dashboard-only tunnel ingress document. Use it when a central system owns the tunnel's configuration and the cluster should hold nothing stronger than its own connector token — which also means supplying no per-`GatewayConfig` credential overrides, since those are stored and used like any credential.
 
 ## Installation
 
