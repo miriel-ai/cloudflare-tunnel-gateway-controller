@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"strings"
 
 	"github.com/cockroachdb/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -507,11 +508,15 @@ func (r *Resolver) readAuthToken(
 		return "", errors.Wrapf(err, "reading auth token secret %s/%s", namespace, name)
 	}
 
-	token := secret.Data[key]
-	if len(token) == 0 {
+	// Trim to match the proxy's own read of its mounted PROXY_AUTH_TOKEN_FILE:
+	// a token that arrives with a trailing newline (kubectl create secret
+	// --from-file, heredocs) would otherwise be pushed untrimmed and 401
+	// against the proxy's trimmed value. Trimmed-to-nothing is the empty case.
+	token := strings.TrimSpace(string(secret.Data[key]))
+	if token == "" {
 		return "", errors.Wrapf(ErrInvalidParameters,
 			"auth token secret %s/%s has no %q key (or it is empty)", namespace, name, key)
 	}
 
-	return string(token), nil
+	return token, nil
 }
