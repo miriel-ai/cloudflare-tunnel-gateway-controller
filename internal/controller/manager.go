@@ -719,9 +719,6 @@ func parseLabelSelector(selectorStr string) (*metav1.LabelSelector, error) {
 	return selector, nil
 }
 
-// getControllerNamespace returns the namespace where the controller is running.
-// It first checks CONTROLLER_NAMESPACE environment variable, then reads from
-// the standard Kubernetes downward API file, falling back to "default".
 // setupGatewayInfraReconciler registers the per-Gateway data-plane reconciler
 // (#479): a dedicated proxy Deployment + config Service (+ optional HPA) per
 // Gateway carrying infrastructure.parametersRef. Status stays with
@@ -812,6 +809,9 @@ func secretCacheNamespaces(configured []string) map[string]cache.Config {
 	return namespaces
 }
 
+// getControllerNamespace returns the namespace where the controller is running.
+// It first checks CONTROLLER_NAMESPACE environment variable, then reads from
+// the standard Kubernetes downward API file, falling back to "default".
 func getControllerNamespace() string {
 	// Allow override via environment variable (useful for testing)
 	if ns := os.Getenv("CONTROLLER_NAMESPACE"); ns != "" {

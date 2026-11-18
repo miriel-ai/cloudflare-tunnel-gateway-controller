@@ -2,11 +2,21 @@ package controller
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	"github.com/lexfrei/cloudflare-tunnel-gateway-controller/api/v1alpha1"
 	"github.com/lexfrei/cloudflare-tunnel-gateway-controller/internal/cfmetrics"
 	"github.com/lexfrei/cloudflare-tunnel-gateway-controller/internal/config"
 )
@@ -60,21 +70,44 @@ func TestResolveInfraGateways_PlanesDisabledRefusesWithoutResolving(t *testing.T
 // parses every opted-in Gateway's connector token, which reads Secrets the
 // scoped cache cannot see. With everything already refused there is nothing
 // to arbitrate.
+//
+// The invariant is asserted by COUNTING Secret reads through an interceptor,
+// not inferred from the refused set: the token Secret exists in these
+// fixtures, so if either disabled-path guard (resolveInfraGateways or
+// applyPlaneRefusals) is deleted, the resolve/arbitration machinery reads it
+// successfully and the zero-reads assertion is what fails.
 func TestApplyPlaneRefusals_PlanesDisabledSkipsArbitration(t *testing.T) {
 	t.Parallel()
 
-	fixtures := perGatewayStatusFixtures(t)
-	objs := fixtures[:0:0]
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(gatewayv1.Install(scheme))
+	utilruntime.Must(v1alpha1.AddToScheme(scheme))
 
-	for _, obj := range fixtures {
-		if obj.GetName() == "pg-token" {
-			continue
-		}
+	var secretReads atomic.Int32
 
-		objs = append(objs, obj)
-	}
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(perGatewayStatusFixtures(t)...).
+		WithStatusSubresource(&gatewayv1.Gateway{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, isSecret := obj.(*corev1.Secret); isSecret {
+					secretReads.Add(1)
+				}
 
-	fakeClient := setupGatewayFakeClient(objs...)
+				return c.Get(ctx, key, obj, opts...)
+			},
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, isSecretList := list.(*corev1.SecretList); isSecretList {
+					secretReads.Add(1)
+				}
+
+				return c.List(ctx, list, opts...)
+			},
+		}).
+		Build()
+
 	syncer := NewRouteSyncer(fakeClient, fakeClient.Scheme(), "cluster.local", "test-controller",
 		config.NewResolver(fakeClient, "default", cfmetrics.NewNoopCollector(), verifiedClaims()),
 		cfmetrics.NewNoopCollector(), nil)
@@ -85,10 +118,11 @@ func TestApplyPlaneRefusals_PlanesDisabledSkipsArbitration(t *testing.T) {
 	infra, err := syncer.resolveInfraGateways(ctx)
 	require.NoError(t, err)
 
-	// Must not panic or read the (absent) token Secret; the refused set must
-	// survive untouched.
 	syncer.applyPlaneRefusals(ctx, infra, &config.ResolvedConfig{})
 
 	assert.True(t, infra.isRefused("default/pg-gateway"))
 	assert.Empty(t, infra.resolved)
+	assert.Zero(t, secretReads.Load(),
+		"the disabled path must read NO Secret: with the scoped cache they are unreadable, "+
+			"and a read here means a dropped guard in resolveInfraGateways or applyPlaneRefusals")
 }
