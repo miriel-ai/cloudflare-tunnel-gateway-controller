@@ -583,9 +583,11 @@ tests:
   # Secure-by-default: the config API must always require a Bearer token, even
   # when the operator names no authTokenSecretRef. The CONTROLLER generates
   # the Secret itself via a live API call at the chart's deterministic name
-  # (internal/controller/proxy_auth_secret.go) and this template wires the
-  # proxy pod to read it.
-  - it: should always set PROXY_AUTH_TOKEN by default, pointing at the controller-generated Secret
+  # (internal/controller/proxy_auth_secret.go) and this template mounts it as
+  # a file read via PROXY_AUTH_TOKEN_FILE — never a secretKeyRef env, which
+  # would sit in /proc/<pid>/environ for the pod's whole life (MIR-1692,
+  # mirroring the connector token's MIR-1607).
+  - it: should always mount the auth token file by default, from the controller-generated Secret
     set:
       proxy:
         tunnelTokenSecretRef:
@@ -594,11 +596,23 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].env
           content:
-            name: PROXY_AUTH_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: RELEASE-NAME-cloudflare-tunnel-gateway-controller-proxy-auth-token
-                key: auth-token
+            name: PROXY_AUTH_TOKEN_FILE
+            value: /etc/cf-proxy/auth-token/auth-token
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: auth-token
+            secret:
+              secretName: RELEASE-NAME-cloudflare-tunnel-gateway-controller-proxy-auth-token
+              items:
+                - key: auth-token
+                  path: auth-token
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: auth-token
+            mountPath: /etc/cf-proxy/auth-token
+            readOnly: true
 
   - it: should use the bring-your-own authTokenSecretRef Secret/key instead of the generated one
     set:
@@ -610,13 +624,27 @@ tests:
           key: my-key
     asserts:
       - contains:
-          path: spec.template.spec.containers[0].env
+          path: spec.template.spec.volumes
           content:
-            name: PROXY_AUTH_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: my-own-auth-secret
-                key: my-key
+            name: auth-token
+            secret:
+              secretName: my-own-auth-secret
+              items:
+                - key: my-key
+                  path: auth-token
+
+  - it: should never wire the auth token through the PROXY_AUTH_TOKEN env
+    set:
+      proxy:
+        tunnelTokenSecretRef:
+          name: tunnel-token-secret
+        authTokenSecretRef:
+          name: my-own-auth-secret
+          key: my-key
+    asserts:
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].env[*].name
+          pattern: "^PROXY_AUTH_TOKEN$"
 
   # The proxy talks to Cloudflare and to backend Services; it never calls the
   # Kubernetes API. The per-Gateway renderer already refuses the token

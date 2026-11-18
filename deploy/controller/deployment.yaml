@@ -43,12 +43,14 @@ spec:
             # if the Secret it's responsible for creating doesn't exist yet)
             # and, since --proxy-auth-secret-generate=true, creates it with a
             # random token if missing, then uses it for its own config
-            # pushes, so the config API is never left unauthenticated. Point
-            # your own proxy Deployment's PROXY_AUTH_TOKEN env at the same
-            # Secret/key via a pod-level secretKeyRef so it validates against
-            # the same token — see the L7 Proxy guide. That variable is
-            # REQUIRED in tunnel mode: the proxy refuses to start without it,
-            # or without PROXY_ALLOW_UNAUTHENTICATED_CONFIG_API=1. Requires the
+            # pushes, so the config API is never left unauthenticated. Mount
+            # the same Secret/key into your own proxy Deployment and point
+            # PROXY_AUTH_TOKEN_FILE at the mounted file so it validates
+            # against the same token (a direct-value PROXY_AUTH_TOKEN env
+            # also works but sits in /proc/<pid>/environ) — see the L7 Proxy
+            # guide. A token is REQUIRED in tunnel mode: the proxy refuses to
+            # start without one, or without
+            # PROXY_ALLOW_UNAUTHENTICATED_CONFIG_API=1. Requires the
             # "secrets" create verb granted by deploy/rbac/role.yaml.
             - --proxy-auth-secret-ref=cloudflare-tunnel-system/cloudflare-tunnel-gateway-controller-proxy-auth-token
             - --proxy-auth-secret-key=auth-token

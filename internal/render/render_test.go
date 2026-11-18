@@ -390,39 +390,75 @@ func filterKeys(all map[string]string, want map[string]string) map[string]string
 }
 
 // TestProxyDeployment_AuthTokenAlwaysWired pins the fail-secure default for
-// the per-Gateway config API: WITHOUT an explicit authTokenSecretRef the env
-// must wire to the controller-GENERATED auth Secret — an unauthenticated
-// tenant config API would accept PUT /config from any pod that can reach it,
-// the exact cross-tenant hijack the dedicated plane exists to prevent.
+// the per-Gateway config API: WITHOUT an explicit authTokenSecretRef the
+// mounted auth-token file must come from the controller-GENERATED auth Secret
+// — an unauthenticated tenant config API would accept PUT /config from any
+// pod that can reach it, the exact cross-tenant hijack the dedicated plane
+// exists to prevent. The token is delivered as a mounted Secret file read via
+// PROXY_AUTH_TOKEN_FILE, never a secretKeyRef env, which would sit in
+// /proc/<pid>/environ for the pod's whole life (MIR-1692, mirroring the
+// connector token's MIR-1607).
 func TestProxyDeployment_AuthTokenAlwaysWired(t *testing.T) {
 	t.Parallel()
 
 	deployment := render.ProxyDeployment(testInput("edge"))
 	container := deployment.Spec.Template.Spec.Containers[0]
 
-	var authEnv *corev1.EnvVar
+	var authEnv, legacyEnv *corev1.EnvVar
 
 	for i := range container.Env {
-		if container.Env[i].Name == "PROXY_AUTH_TOKEN" {
+		switch container.Env[i].Name {
+		case "PROXY_AUTH_TOKEN_FILE":
 			authEnv = &container.Env[i]
+		case "PROXY_AUTH_TOKEN":
+			legacyEnv = &container.Env[i]
 		}
 	}
 
-	require.NotNil(t, authEnv, "PROXY_AUTH_TOKEN must be wired even without an explicit authTokenSecretRef")
-	require.NotNil(t, authEnv.ValueFrom.SecretKeyRef)
-	assert.Equal(t, render.GeneratedAuthSecretName(testInput("edge").Gateway), authEnv.ValueFrom.SecretKeyRef.Name)
-	assert.Equal(t, "auth-token", authEnv.ValueFrom.SecretKeyRef.Key)
+	require.NotNil(t, authEnv, "PROXY_AUTH_TOKEN_FILE must be wired even without an explicit authTokenSecretRef")
+	assert.Equal(t, "/etc/cf-proxy/auth-token/auth-token", authEnv.Value)
+	assert.Nil(t, legacyEnv, "the bearer token must not be wired through the PROXY_AUTH_TOKEN env")
+
+	var authMount *corev1.VolumeMount
+
+	for i := range container.VolumeMounts {
+		if container.VolumeMounts[i].Name == "auth-token" {
+			authMount = &container.VolumeMounts[i]
+		}
+	}
+
+	require.NotNil(t, authMount, "the auth-token Secret volume must be mounted")
+	assert.Equal(t, "/etc/cf-proxy/auth-token", authMount.MountPath)
+	assert.True(t, authMount.ReadOnly)
+
+	authVolume := findAuthTokenVolume(t, deployment)
+	assert.Equal(t, render.GeneratedAuthSecretName(testInput("edge").Gateway), authVolume.Secret.SecretName)
+	require.Len(t, authVolume.Secret.Items, 1,
+		"only the token key is projected, so unrelated keys in the Secret never land on disk")
+	assert.Equal(t, "auth-token", authVolume.Secret.Items[0].Key)
+	assert.Equal(t, "auth-token", authVolume.Secret.Items[0].Path)
 
 	explicit := testInput("edge")
 	explicit.Config.Spec.AuthTokenSecretRef = &v1alpha1.LocalSecretReference{Name: "tenant-auth"}
-	explicitContainer := render.ProxyDeployment(explicit).Spec.Template.Spec.Containers[0]
+	explicitVolume := findAuthTokenVolume(t, render.ProxyDeployment(explicit))
+	assert.Equal(t, "tenant-auth", explicitVolume.Secret.SecretName,
+		"an explicit ref must win over the generated Secret")
+}
 
-	for _, env := range explicitContainer.Env {
-		if env.Name == "PROXY_AUTH_TOKEN" {
-			assert.Equal(t, "tenant-auth", env.ValueFrom.SecretKeyRef.Name,
-				"an explicit ref must win over the generated Secret")
+// findAuthTokenVolume returns the rendered auth-token Secret volume, failing
+// the test when it is absent.
+func findAuthTokenVolume(t *testing.T, deployment *appsv1.Deployment) *corev1.Volume {
+	t.Helper()
+
+	for i := range deployment.Spec.Template.Spec.Volumes {
+		if deployment.Spec.Template.Spec.Volumes[i].Name == "auth-token" {
+			return &deployment.Spec.Template.Spec.Volumes[i]
 		}
 	}
+
+	t.Fatal("the auth-token Secret volume must be rendered")
+
+	return nil
 }
 
 // TestProxyDeployment_NoServiceAccountTokenAutomount pins the hardening for
@@ -676,8 +712,8 @@ func TestRenderedNames_NoSameKindCollisionAcrossGateways(t *testing.T) {
 // TestProxyDeployment_AuthTokenHashAnnotation pins the config-API auth-token
 // rotation contract: the pod template carries a hash of the bearer token so a
 // rotated authTokenSecretRef rolls the pods. Without it the proxy keeps the
-// old PROXY_AUTH_TOKEN (a SecretKeyRef env, read once at start) while the
-// controller pushes with the new token — every push 401s until a manual
+// old token (its mounted PROXY_AUTH_TOKEN_FILE is read once at start) while
+// the controller pushes with the new token — every push 401s until a manual
 // rollout. The Secret watch already re-renders on rotation; this annotation is
 // what makes that re-render a non-identical pod template.
 func TestProxyDeployment_AuthTokenHashAnnotation(t *testing.T) {
@@ -771,9 +807,12 @@ func TestProxyDeployment_OptionalKnobs(t *testing.T) {
 		envByName[env.Name] = env
 	}
 
-	require.Contains(t, envByName, "PROXY_AUTH_TOKEN")
-	assert.Equal(t, "edge-auth", envByName["PROXY_AUTH_TOKEN"].ValueFrom.SecretKeyRef.Name)
-	assert.Equal(t, "auth-token", envByName["PROXY_AUTH_TOKEN"].ValueFrom.SecretKeyRef.Key)
+	require.Contains(t, envByName, "PROXY_AUTH_TOKEN_FILE")
+	assert.Equal(t, "/etc/cf-proxy/auth-token/auth-token", envByName["PROXY_AUTH_TOKEN_FILE"].Value)
+
+	authVolume := findAuthTokenVolume(t, deployment)
+	assert.Equal(t, "edge-auth", authVolume.Secret.SecretName)
+	assert.Equal(t, "auth-token", authVolume.Secret.Items[0].Key)
 
 	require.Contains(t, envByName, "PROXY_TUNNEL_PROTOCOL")
 	assert.Equal(t, "http2", envByName["PROXY_TUNNEL_PROTOCOL"].Value)

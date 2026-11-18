@@ -122,8 +122,8 @@ func TestGatewayInfraReconciler_ApplyConvergesAgainstAPIServer(t *testing.T) {
 		require.Equal(t, controllerutil.OperationResultNone, op, "a stable auth token must not roll the pods")
 
 		// Rotating the auth token must change the pod template so the Deployment
-		// rolls and the proxy re-reads PROXY_AUTH_TOKEN — without this the
-		// running pod keeps the old token and the controller's pushes 401.
+		// rolls and the proxy re-reads its PROXY_AUTH_TOKEN_FILE — without this
+		// the running pod keeps the old token and the controller's pushes 401.
 		rotated := *base
 		rotated.AuthToken = "auth-token-v2"
 

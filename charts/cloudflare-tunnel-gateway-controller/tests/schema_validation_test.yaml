@@ -682,13 +682,14 @@ tests:
     asserts:
       - template: deployment-proxy.yaml
         contains:
-          path: spec.template.spec.containers[0].env
+          path: spec.template.spec.volumes
           content:
-            name: PROXY_AUTH_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: proxy-auth
-                key: token
+            name: auth-token
+            secret:
+              secretName: proxy-auth
+              items:
+                - key: token
+                  path: auth-token
 
   - it: should reject non-string authTokenSecretRef.name
     set:
