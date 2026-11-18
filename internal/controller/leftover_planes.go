@@ -6,10 +6,13 @@ import (
 
 	"github.com/cockroachdb/errors"
 	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/lexfrei/cloudflare-tunnel-gateway-controller/internal/render"
 )
@@ -26,13 +29,16 @@ import (
 // action that gets reviewed.
 //
 // Detection is read-only (deployments get/list/watch stays cluster-wide) and
-// counts only Gateway-controlled Deployments: the render label alone can be
-// put on anything by anyone able to label a Deployment.
-func addLeftoverPlaneWarning(mgr ctrl.Manager) error {
+// counts only Deployments controlled by a Gateway whose GatewayClass THIS
+// controller manages: the render label alone can be put on anything by anyone
+// able to label a Deployment, and a SECOND installation's planes are its own,
+// healthy and actively managed — reporting those would tell the operator to
+// delete the neighbour's Gateways.
+func addLeftoverPlaneWarning(mgr ctrl.Manager, controllerName string) error {
 	err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		logger := log.FromContext(ctx).WithName("leftover-planes")
 
-		leftovers, listErr := leftoverDedicatedPlanes(ctx, mgr.GetClient())
+		leftovers, listErr := leftoverDedicatedPlanes(ctx, mgr.GetClient(), controllerName)
 		if listErr != nil {
 			// Reported, not fatal: failing the whole manager over a warning
 			// scan would take the shared plane down with it.
@@ -54,9 +60,12 @@ func addLeftoverPlaneWarning(mgr ctrl.Manager) error {
 	return errors.Wrap(err, "failed to add leftover-plane warning")
 }
 
-// leftoverDedicatedPlanes lists the Gateway-controlled proxy Deployments a
-// per-Gateway render left behind, as "namespace/name (Gateway <owner>)".
-func leftoverDedicatedPlanes(ctx context.Context, cli client.Client) ([]string, error) {
+// leftoverDedicatedPlanes lists the proxy Deployments a per-Gateway render of
+// THIS controller left behind, as "namespace/name (Gateway <owner>)": each is
+// controlled by a Gateway that still exists and whose GatewayClass carries
+// controllerName. A Deployment whose owning Gateway is already deleted is
+// skipped — ownerRef GC collects it, so there is nothing to act on.
+func leftoverDedicatedPlanes(ctx context.Context, cli client.Client, controllerName string) ([]string, error) {
 	var deployments appsv1.DeploymentList
 	if err := cli.List(ctx, &deployments, client.HasLabels{render.GatewayLabel}); err != nil {
 		return nil, errors.Wrap(err, "listing rendered proxy Deployments")
@@ -71,6 +80,25 @@ func leftoverDedicatedPlanes(ctx context.Context, cli client.Client) ([]string, 
 		}
 
 		owner := metav1GetControllerName(dep)
+
+		var gateway gatewayv1.Gateway
+		if err := cli.Get(ctx, types.NamespacedName{Namespace: dep.Namespace, Name: owner}, &gateway); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue // Gateway gone: ownerRef GC collects the plane.
+			}
+
+			return nil, errors.Wrapf(err, "reading the owning Gateway %s/%s", dep.Namespace, owner)
+		}
+
+		managed, err := gatewayIsManaged(ctx, cli, controllerName, &gateway)
+		if err != nil {
+			return nil, errors.Wrapf(err, "classifying the owning Gateway %s/%s", dep.Namespace, owner)
+		}
+
+		if !managed {
+			continue // another installation's plane, its own controller's business
+		}
+
 		leftovers = append(leftovers, dep.Namespace+"/"+dep.Name+" (Gateway "+owner+")")
 	}
 

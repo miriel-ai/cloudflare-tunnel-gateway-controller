@@ -80,6 +80,7 @@ func init() {
 	rootCmd.Flags().String("proxy-config-tls-secret", "", "Shared data plane's config API serving certificate Secret in `<namespace>/<name>` form, created and renewed in place by the controller and mounted by the shared proxy. Set together with --proxy-config-ca-secret.")
 	rootCmd.Flags().String("proxy-token-secret", "", "Tunnel-token Secret to watch in `<namespace>/<name>` form; when set, the controller rolls the proxy Deployment whenever the Secret data changes (issue #114). Empty disables the watcher.")
 	rootCmd.Flags().String("proxy-deployment-label", "", "Label selector identifying the proxy Deployment(s) to roll on tunnel-token change, in `key=value` form. Defaults to `app.kubernetes.io/component=proxy` (matches the chart).")
+	rootCmd.Flags().String("proxy-deployment-name", "", "Exact Deployment name to roll on tunnel-token change, within the --proxy-deployment-label matches. The chart always passes its own proxy's name, so a second release's proxy sharing the namespace (which matches the generic label too) is never touched. Empty keeps label-only selection.")
 	rootCmd.Flags().String("ws-idle-timeout", "",
 		"Idle bound on an established WebSocket session for per-Gateway data planes (Go duration). "+
 			"Empty leaves the proxy's own 1h default; the shared plane reads the same chart value directly.")
@@ -95,17 +96,7 @@ func init() {
 
 	rootCmd.Flags().String("proxy-image", "", "Container image for per-Gateway rendered proxy Deployments (GatewayConfig data planes). Empty disables rendering defaults; the chart always sets it to the release's proxy image.")
 
-	// Installation-level per-Gateway data-plane switch (MIR-1607). The chart
-	// wires both flags together with the matching RBAC shape: toggle off =
-	// namespaced Secret Roles + scoped cache; on = today's cluster-wide rules.
-	rootCmd.Flags().Bool("per-gateway-data-planes", true,
-		"Serve per-Gateway dedicated data planes (GatewayConfig). false refuses Gateways requesting one with "+
-			"Accepted=False/PerGatewayDataPlanesDisabled and skips the infra reconciler entirely -- for installations "+
-			"whose RBAC does not grant the cluster-wide writes dedicated planes need (the chart's perGatewayDataPlanes.enabled=false).")
-	rootCmd.Flags().StringSlice("secret-namespaces", nil,
-		"Comma-separated namespaces the controller's Secret cache (informers and cached reads) is restricted to; "+
-			"the controller's own namespace is always included. Set together with namespace-scoped Secret RBAC when "+
-			"per-Gateway data planes are off; a Secret read outside the list fails closed. Empty keeps the cluster-wide cache.")
+	registerDataPlaneScopeFlags()
 
 	// Hostname-ownership enforcement (issue #475, controller-side layer).
 	rootCmd.Flags().Bool("hostname-ownership-enforce", false, "Enforce per-namespace hostname ownership in the controller: routes whose hostnames fall outside their namespace's allowed-suffix label are rejected and never programmed. Complements (and is independent of) the chart's ValidatingAdmissionPolicy.")
@@ -124,6 +115,21 @@ func init() {
 
 	_ = viper.BindPFlags(rootCmd.Flags())
 	_ = viper.BindPFlags(rootCmd.PersistentFlags())
+}
+
+// registerDataPlaneScopeFlags registers the installation-level per-Gateway
+// data-plane switch and the Secret cache scope (MIR-1607). The chart wires
+// them together with the matching RBAC shape: toggle off = namespaced Secret
+// Roles + scoped cache; on = today's cluster-wide rules.
+func registerDataPlaneScopeFlags() {
+	rootCmd.Flags().Bool("per-gateway-data-planes", true,
+		"Serve per-Gateway dedicated data planes (GatewayConfig). false refuses Gateways requesting one with "+
+			"Accepted=False/PerGatewayDataPlanesDisabled and skips the infra reconciler entirely -- for installations "+
+			"whose RBAC does not grant the cluster-wide writes dedicated planes need (the chart's perGatewayDataPlanes.enabled=false).")
+	rootCmd.Flags().StringSlice("secret-namespaces", nil,
+		"Comma-separated namespaces the controller's Secret cache (informers and cached reads) is restricted to; "+
+			"the controller's own namespace is always included. Set together with namespace-scoped Secret RBAC when "+
+			"per-Gateway data planes are off; a Secret read outside the list fails closed. Empty keeps the cluster-wide cache.")
 }
 
 func initConfig() {
@@ -216,6 +222,7 @@ func runController(_ *cobra.Command, _ []string) error {
 		ProxyConfigTLSSecretRef: viper.GetString("proxy-config-tls-secret"),
 		ProxyTokenSecret:        viper.GetString("proxy-token-secret"),
 		ProxyDeploymentLabel:    viper.GetString("proxy-deployment-label"),
+		ProxyDeploymentName:     viper.GetString("proxy-deployment-name"),
 		TunnelProtocol:          viper.GetString("tunnel-protocol"),
 		MirrorMaxInFlight:       viper.GetInt("mirror-max-in-flight"),
 		WSIdleTimeout:           viper.GetString("ws-idle-timeout"),

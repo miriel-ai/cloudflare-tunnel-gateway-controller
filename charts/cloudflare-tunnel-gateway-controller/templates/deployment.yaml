@@ -88,6 +88,10 @@ spec:
             {{- end }}
             {{- if .Values.proxy.tunnelTokenSecretRef.name }}
             - "--proxy-token-secret={{ .Release.Namespace }}/{{ .Values.proxy.tunnelTokenSecretRef.name }}"
+            # Name the one Deployment the rotation roll targets: the generic
+            # component=proxy label also matches any OTHER release's proxy in
+            # this namespace, which is that release's to roll, not ours.
+            - "--proxy-deployment-name={{ include "cf-tunnel-gw-ctrl.proxyFullname" . }}"
             {{- end }}
             {{- if not (eq (include "cf-tunnel-gw-ctrl.perGatewayPlanesEnabled" .) "true") }}
             # Per-Gateway data planes off: the infra reconciler is skipped,

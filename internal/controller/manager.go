@@ -223,6 +223,15 @@ type Config struct {
 	// namespace.
 	ProxyDeploymentLabel string
 
+	// ProxyDeploymentName, when set, restricts the token-rotation roll to
+	// the one Deployment of that name within the label matches. The chart
+	// always passes its own proxy's name: the label alone matches every
+	// release's proxy sharing the namespace, and another release's is not
+	// this controller's to roll (under the namespace-scoped RBAC of
+	// MIR-1607, patching it is Forbidden too). Empty keeps label-only
+	// selection for hand-built installs.
+	ProxyDeploymentName string
+
 	// Tracing enables OpenTelemetry instrumentation of the controller's
 	// outbound HTTP clients (Cloudflare API + proxy config push). The global
 	// TracerProvider is installed by the binary entrypoint; this flag only
@@ -406,7 +415,7 @@ func Run(ctx context.Context, cfg *Config) error {
 		// A plane rendered BEFORE the feature was disabled cannot be torn
 		// down any more and keeps serving its last-pushed routes — the
 		// operator must hear about each one (see addLeftoverPlaneWarning).
-		if err := addLeftoverPlaneWarning(mgr); err != nil {
+		if err := addLeftoverPlaneWarning(mgr, cfg.ControllerName); err != nil {
 			return err
 		}
 	}
@@ -518,7 +527,7 @@ func Run(ctx context.Context, cfg *Config) error {
 		return err
 	}
 
-	if err := setupProxySecretReconciler(mgr, cfg.ProxyTokenSecret, cfg.ProxyDeploymentLabel); err != nil {
+	if err := setupProxySecretReconciler(mgr, cfg.ProxyTokenSecret, cfg.ProxyDeploymentLabel, cfg.ProxyDeploymentName); err != nil {
 		return err
 	}
 
@@ -570,7 +579,7 @@ func setupListenerSetReconciler(mgr ctrl.Manager, controllerName string, viewSto
 //
 // Extracted from Run to keep the per-reconciler setup chain in Run
 // under the cyclomatic-complexity gate.
-func setupProxySecretReconciler(mgr ctrl.Manager, proxyTokenSecret, proxyDeploymentLabel string) error {
+func setupProxySecretReconciler(mgr ctrl.Manager, proxyTokenSecret, proxyDeploymentLabel, proxyDeploymentName string) error {
 	if strings.TrimSpace(proxyTokenSecret) == "" {
 		return nil
 	}
@@ -579,6 +588,8 @@ func setupProxySecretReconciler(mgr ctrl.Manager, proxyTokenSecret, proxyDeploym
 	if err != nil {
 		return errors.Wrap(err, "failed to construct proxy secret reconciler")
 	}
+
+	reconciler.DeploymentName = strings.TrimSpace(proxyDeploymentName)
 
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		return errors.Wrap(err, "failed to setup proxy secret reconciler")

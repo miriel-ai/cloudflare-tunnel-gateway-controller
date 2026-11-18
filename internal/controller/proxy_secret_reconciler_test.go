@@ -574,15 +574,35 @@ func TestProxySecretReconciler_PredicateSkipsGatewayOwnedDeployment(t *testing.T
 		"a Deployment owned by a Gateway kind of another API group is not a per-Gateway plane")
 }
 
-// TestProxySecretReconciler_ForbiddenForeignDeploymentIsSkipped pins the
-// behaviour under the namespace-scoped RBAC MIR-1607 installs with
-// per-Gateway planes off: the deployments patch grant is resourceNames-scoped
-// to THIS release's proxy, while the label selector still matches every
-// release's proxy in the namespace. A Forbidden on a foreign Deployment means
-// "not ours by RBAC" and must be skipped, not returned — aborting the loop on
-// it could permanently starve this release's own proxy of its token-rotation
-// roll when the foreign Deployment sorts first.
-func TestProxySecretReconciler_ForbiddenForeignDeploymentIsSkipped(t *testing.T) {
+// staleProxyDeployment builds a label-matching proxy Deployment whose pods
+// run a stale token revision, for the DeploymentName-targeting tests.
+func staleProxyDeployment(ns, name string) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+			Labels:    map[string]string{"app.kubernetes.io/component": "proxy"},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						tokenRevisionAnnotation: "stale-revision",
+					},
+				},
+			},
+		},
+	}
+}
+
+// TestProxySecretReconciler_DeploymentNameSkipsForeignRelease pins the
+// targeting MIR-1607 needs: the generic component=proxy label also matches
+// any OTHER release's proxy sharing the namespace, which is that release's to
+// roll — and under the namespace-scoped RBAC, Forbidden to patch. With
+// --proxy-deployment-name set (the chart always sets it), the foreign
+// Deployment is never touched at all — identified by NAME, not by swallowing
+// its Forbidden — so it can neither starve our roll nor absorb our revision.
+func TestProxySecretReconciler_DeploymentNameSkipsForeignRelease(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -599,29 +619,10 @@ func TestProxySecretReconciler_ForbiddenForeignDeploymentIsSkipped(t *testing.T)
 		Data:       map[string][]byte{"tunnel-token": []byte("rotated-jwt")},
 	}
 
-	staleTemplate := func(name string) *appsv1.Deployment {
-		return &appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: ns,
-				Labels:    map[string]string{"app.kubernetes.io/component": "proxy"},
-			},
-			Spec: appsv1.DeploymentSpec{
-				Template: corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{
-						Annotations: map[string]string{
-							tokenRevisionAnnotation: "stale-revision",
-						},
-					},
-				},
-			},
-		}
-	}
-
-	// "a-foreign" sorts BEFORE "z-ours" in the cache's list order — the
-	// starving arrangement.
-	foreign := staleTemplate("a-foreign")
-	ours := staleTemplate("z-ours")
+	// "a-foreign" sorts BEFORE "z-ours" in list order — the arrangement that
+	// used to starve the roll when the foreign Deployment aborted the loop.
+	foreign := staleProxyDeployment(ns, "a-foreign")
+	ours := staleProxyDeployment(ns, "z-ours")
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -644,23 +645,78 @@ func TestProxySecretReconciler_ForbiddenForeignDeploymentIsSkipped(t *testing.T)
 		TokenSecretName:      secret,
 		DeploymentLabelKey:   "app.kubernetes.io/component",
 		DeploymentLabelValue: "proxy",
+		DeploymentName:       "z-ours",
 	}
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: ns, Name: secret},
 	})
-	require.NoError(t, err, "a Forbidden foreign Deployment must not fail the reconcile")
+	require.NoError(t, err, "the foreign Deployment must be skipped by name, never patched")
 
 	var got appsv1.Deployment
 	require.NoError(t, fakeClient.Get(context.Background(),
 		types.NamespacedName{Namespace: ns, Name: "z-ours"}, &got))
 	assert.Equal(t, hashSecretData(tokenSecret.Data), got.Spec.Template.Annotations[tokenRevisionAnnotation],
-		"our own proxy must still roll despite the earlier Forbidden")
+		"our own proxy must roll")
+
+	require.NoError(t, fakeClient.Get(context.Background(),
+		types.NamespacedName{Namespace: ns, Name: "a-foreign"}, &got))
+	assert.Equal(t, "stale-revision", got.Spec.Template.Annotations[tokenRevisionAnnotation],
+		"the foreign release's proxy must be left exactly as it was")
 }
 
-// TestProxySecretReconciler_NonForbiddenPatchErrorStillFails pins the other
-// half: only Forbidden is a skip. A genuine patch failure must surface for
-// retry, or a transient apiserver error would silently drop a rotation roll.
+// TestProxySecretReconciler_ForbiddenOnOwnTargetPropagates pins the half a
+// Forbidden-swallowing heuristic would get wrong: a Forbidden on OUR OWN
+// Deployment (an admission denial, or temporarily lost permission) is a real
+// failure of the rotation roll and must surface for retry — returning success
+// would strand the proxy on its old connector token with nothing scheduled to
+// try again.
+func TestProxySecretReconciler_ForbiddenOnOwnTargetPropagates(t *testing.T) {
+	t.Parallel()
+
+	const (
+		ns     = "shared-ns"
+		secret = "tunnel-token"
+	)
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, appsv1.AddToScheme(scheme))
+
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: secret, Namespace: ns},
+		Data:       map[string][]byte{"tunnel-token": []byte("rotated-jwt")},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(tokenSecret, staleProxyDeployment(ns, "proxy")).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(_ context.Context, _ client.WithWatch, obj client.Object, _ client.Patch, _ ...client.PatchOption) error {
+				return apierrors.NewForbidden(
+					schema.GroupResource{Group: "apps", Resource: "deployments"}, obj.GetName(), nil)
+			},
+		}).
+		Build()
+
+	r := &ProxySecretReconciler{
+		Client:               fakeClient,
+		TokenSecretNamespace: ns,
+		TokenSecretName:      secret,
+		DeploymentLabelKey:   "app.kubernetes.io/component",
+		DeploymentLabelValue: "proxy",
+		DeploymentName:       "proxy",
+	}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: ns, Name: secret},
+	})
+	require.Error(t, err, "a Forbidden on this release's own target must propagate for retry")
+}
+
+// TestProxySecretReconciler_NonForbiddenPatchErrorStillFails pins that a
+// genuine patch failure surfaces for retry — a transient apiserver error must
+// not silently drop a rotation roll.
 func TestProxySecretReconciler_NonForbiddenPatchErrorStillFails(t *testing.T) {
 	t.Parallel()
 
@@ -678,24 +734,9 @@ func TestProxySecretReconciler_NonForbiddenPatchErrorStillFails(t *testing.T) {
 		Data:       map[string][]byte{"tunnel-token": []byte("rotated-jwt")},
 	}
 
-	proxy := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy",
-			Namespace: ns,
-			Labels:    map[string]string{"app.kubernetes.io/component": "proxy"},
-		},
-		Spec: appsv1.DeploymentSpec{
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{tokenRevisionAnnotation: "stale-revision"},
-				},
-			},
-		},
-	}
-
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(tokenSecret, proxy).
+		WithObjects(tokenSecret, staleProxyDeployment(ns, "proxy")).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Patch: func(_ context.Context, _ client.WithWatch, _ client.Object, _ client.Patch, _ ...client.PatchOption) error {
 				return apierrors.NewServiceUnavailable("etcd is having a day")
@@ -714,5 +755,5 @@ func TestProxySecretReconciler_NonForbiddenPatchErrorStillFails(t *testing.T) {
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: ns, Name: secret},
 	})
-	require.Error(t, err, "a non-Forbidden patch failure must propagate for retry")
+	require.Error(t, err, "a patch failure must propagate for retry")
 }
