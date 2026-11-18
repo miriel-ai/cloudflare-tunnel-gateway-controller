@@ -106,6 +106,18 @@ func outOfScopeSecretError(namespace, name string) *apierrors.StatusError {
 	}}
 }
 
+// missingSecretMessage builds the operator-facing message for a NotFound
+// certificate-Secret read: the scope diagnostic (with its remedy) when the
+// scoped cache refused the read, plain not-found when the Secret is genuinely
+// absent.
+func missingSecretMessage(err error, namespace, name string) string {
+	if scopeMsg, ok := secretScopeMessage(err); ok {
+		return scopeMsg
+	}
+
+	return fmt.Sprintf("Secret %s/%s not found", namespace, name)
+}
+
 // secretScopeMessage returns the scope diagnostic when err is (or wraps) the
 // NotFound outOfScopeSecretError builds, and false for every other error —
 // notably a plain NotFound for a Secret that is genuinely absent. Consumers
