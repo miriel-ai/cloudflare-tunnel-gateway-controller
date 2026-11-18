@@ -95,6 +95,18 @@ func init() {
 
 	rootCmd.Flags().String("proxy-image", "", "Container image for per-Gateway rendered proxy Deployments (GatewayConfig data planes). Empty disables rendering defaults; the chart always sets it to the release's proxy image.")
 
+	// Installation-level per-Gateway data-plane switch (MIR-1607). The chart
+	// wires both flags together with the matching RBAC shape: toggle off =
+	// namespaced Secret Roles + scoped cache; on = today's cluster-wide rules.
+	rootCmd.Flags().Bool("per-gateway-data-planes", true,
+		"Serve per-Gateway dedicated data planes (GatewayConfig). false refuses Gateways requesting one with "+
+			"Accepted=False/PerGatewayDataPlanesDisabled and skips the infra reconciler entirely -- for installations "+
+			"whose RBAC does not grant the cluster-wide writes dedicated planes need (the chart's perGatewayDataPlanes.enabled=false).")
+	rootCmd.Flags().StringSlice("secret-namespaces", nil,
+		"Comma-separated namespaces the controller's Secret cache (informers and cached reads) is restricted to; "+
+			"the controller's own namespace is always included. Set together with namespace-scoped Secret RBAC when "+
+			"per-Gateway data planes are off; a Secret read outside the list fails closed. Empty keeps the cluster-wide cache.")
+
 	// Hostname-ownership enforcement (issue #475, controller-side layer).
 	rootCmd.Flags().Bool("hostname-ownership-enforce", false, "Enforce per-namespace hostname ownership in the controller: routes whose hostnames fall outside their namespace's allowed-suffix label are rejected and never programmed. Complements (and is independent of) the chart's ValidatingAdmissionPolicy.")
 	rootCmd.Flags().String("hostname-ownership-label-key", "cf.k8s.lex.la/hostname-suffix", "Namespace label carrying the tenant's allowed hostname suffix.")
@@ -128,6 +140,7 @@ func initConfig() {
 	viper.SetDefault("log-level", "info")
 	viper.SetDefault("log-format", "json")
 	viper.SetDefault("tunnel-protocol", "auto")
+	viper.SetDefault("per-gateway-data-planes", true)
 	viper.SetDefault("leader-elect", false)
 	viper.SetDefault("leader-election-name", "cloudflare-tunnel-gateway-controller-leader")
 	viper.SetDefault("tracing-enabled", false)
@@ -211,6 +224,9 @@ func runController(_ *cobra.Command, _ []string) error {
 		Tracing:                 tracingEnabled,
 
 		ProxyImage: viper.GetString("proxy-image"),
+
+		DisablePerGatewayDataPlanes: !viper.GetBool("per-gateway-data-planes"),
+		SecretNamespaces:            viper.GetStringSlice("secret-namespaces"),
 
 		HostnameOwnershipEnforce:           viper.GetBool("hostname-ownership-enforce"),
 		HostnameOwnershipLabelKey:          viper.GetString("hostname-ownership-label-key"),

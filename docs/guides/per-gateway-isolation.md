@@ -13,6 +13,9 @@ Use it when admission-level scoping (see [Multi-Tenancy](multi-tenancy.md)) is n
 
 ## Opting in
 
+!!! note "The feature is installation-gated"
+    Per-Gateway data planes are on by default. An installation can turn them off entirely with the chart value `perGatewayDataPlanes.enabled=false`, which also drops the cluster-wide RBAC that exists only for them (see the [Security reference](../reference/security.md)). On such an installation every Gateway requesting a dedicated plane — its own `parametersRef` or the class default — is refused with `Accepted=False/PerGatewayDataPlanesDisabled`, and its routes are served from no data plane.
+
 1. Create a Cloudflare Tunnel for the Gateway (one tunnel per isolated Gateway) and store its connector token in the Gateway's namespace:
 
     ```bash

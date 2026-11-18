@@ -3,16 +3,20 @@ package controller
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/cockroachdb/errors"
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -224,6 +228,25 @@ type Config struct {
 	// TracerProvider is installed by the binary entrypoint; this flag only
 	// gates whether those clients wrap their transports with otelhttp.
 	Tracing bool
+
+	// DisablePerGatewayDataPlanes turns off per-Gateway dedicated data planes
+	// for the whole installation (--per-gateway-data-planes=false, wired from
+	// the chart's perGatewayDataPlanes.enabled=false). The infra reconciler is
+	// not registered — its informers would need list/watch the slimmed-down
+	// RBAC no longer grants — and a Gateway requesting a dedicated plane is
+	// refused with Accepted=False/PerGatewayDataPlanesDisabled; its routes are
+	// served from no partition. The zero value keeps today's behaviour.
+	DisablePerGatewayDataPlanes bool
+
+	// SecretNamespaces, when non-empty, restricts the manager cache's Secret
+	// informers to exactly these namespaces (the controller's own namespace is
+	// always included). Wired from --secret-namespaces by the chart when
+	// per-Gateway planes are off, matching the namespaced Roles it then
+	// installs in place of the cluster-wide Secret grant: the release
+	// namespace plus the explicitly listed ones (Cloudflare credentials,
+	// listener certificateRefs, BackendTLSPolicy CA Secrets). A Secret read
+	// outside the list fails closed. Empty keeps the cluster-wide cache.
+	SecretNamespaces []string
 }
 
 // Run initializes and starts the controller manager with the provided configuration.
@@ -267,6 +290,23 @@ func Run(ctx context.Context, cfg *Config) error {
 		Client: client.Options{
 			FieldValidation: "Warn",
 		},
+	}
+
+	// Scope the Secret cache to the configured namespaces (MIR-1607): with
+	// per-Gateway planes off, the chart grants Secret reads through namespaced
+	// Roles instead of a cluster-wide rule, and the informers must match —
+	// a cluster-wide Secret watch would be Forbidden at runtime, and a scoped
+	// RBAC with an unscoped cache would still hold every Secret the API
+	// returns. A cached read outside the list fails closed.
+	if namespaces := secretCacheNamespaces(cfg.SecretNamespaces); namespaces != nil {
+		mgrOptions.Cache = cache.Options{
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.Secret{}: {Namespaces: namespaces},
+			},
+		}
+
+		logger.Info("secret cache scoped to explicit namespaces",
+			"namespaces", slices.Sorted(maps.Keys(namespaces)))
 	}
 
 	if cfg.LeaderElect {
@@ -336,59 +376,27 @@ func Run(ctx context.Context, cfg *Config) error {
 	viewStore := newMergeViewStore()
 
 	gatewayReconciler := &GatewayReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		ControllerName: cfg.ControllerName,
-		ConfigResolver: configResolver,
-		ProxyImage:     cfg.ProxyImage,
-		ViewStore:      viewStore,
-		Recorder:       mgr.GetEventRecorder("gateway-controller"),
+		Client:                   mgr.GetClient(),
+		Scheme:                   mgr.GetScheme(),
+		ControllerName:           cfg.ControllerName,
+		ConfigResolver:           configResolver,
+		ProxyImage:               cfg.ProxyImage,
+		ViewStore:                viewStore,
+		Recorder:                 mgr.GetEventRecorder("gateway-controller"),
+		PerGatewayPlanesDisabled: cfg.DisablePerGatewayDataPlanes,
 	}
 
 	if err := gatewayReconciler.SetupWithManager(mgr); err != nil {
 		return errors.Wrap(err, "failed to setup gateway controller")
 	}
 
-	// Per-Gateway data planes (#479): renders a dedicated proxy Deployment +
-	// config Service (+ optional HPA) for Gateways carrying
-	// infrastructure.parametersRef. Status stays with gatewayReconciler.
-	controllerPodSelector, err := parseLabelSelector(cfg.ControllerPodSelector)
+	gatewayInfraReconciler, err := setupGatewayInfraReconciler(mgr, cfg, configResolver, configTLS, defaultNamespace)
 	if err != nil {
-		return errors.Wrap(err, "invalid --controller-pod-selector")
+		return err
 	}
 
-	monitoringSelector, err := parseLabelSelector(cfg.MonitoringNamespaceSelector)
-	if err != nil {
-		return errors.Wrap(err, "invalid --monitoring-namespace-selector")
-	}
-
-	gatewayInfraReconciler := &GatewayInfraReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		ControllerName: cfg.ControllerName,
-		ConfigResolver: configResolver,
-		Recorder:       mgr.GetEventRecorder("gateway-infra-controller"),
-		RenderDefaults: render.Defaults{
-			ProxyImage:         cfg.ProxyImage,
-			TunnelProtocol:     cfg.TunnelProtocol,
-			WSIdleTimeout:      cfg.WSIdleTimeout,
-			MirrorMaxInFlight:  cfg.MirrorMaxInFlight,
-			ConfigAPIPort:      cfg.ProxyConfigAPIPort,
-			AllowXOriginalHost: cfg.ProxyAllowXOriginalHost,
-		},
-		ControllerNamespace:         defaultNamespace,
-		MonitoringNamespaceSelector: monitoringSelector,
-		ControllerPodSelector:       controllerPodSelector,
-		RenderNetworkPolicy:         cfg.RenderNetworkPolicy,
-		ClusterDomain:               cfg.ClusterDomain,
-	}
-
-	if configTLS != nil {
-		gatewayInfraReconciler.ConfigAuthority = configTLS.authority
-	}
-
-	if err := gatewayInfraReconciler.SetupWithManager(mgr); err != nil {
-		return errors.Wrap(err, "failed to setup gateway infra controller")
+	if gatewayInfraReconciler == nil {
+		logger.Info("per-Gateway data planes disabled; Gateways requesting one are refused")
 	}
 
 	// Create shared route syncer for unified HTTP and GRPC route synchronization
@@ -404,6 +412,7 @@ func Run(ctx context.Context, cfg *Config) error {
 	routeSyncer.ViewStore = viewStore
 	routeSyncer.Recorder = mgr.GetEventRecorder("route-syncer")
 	routeSyncer.ProxyConfigAPIPort = cfg.ProxyConfigAPIPort
+	routeSyncer.PerGatewayPlanesDisabled = cfg.DisablePerGatewayDataPlanes
 
 	if cfg.HostnameOwnershipEnforce {
 		ownershipPolicy, ownershipErr := hostnameownership.New(
@@ -454,7 +463,9 @@ func Run(ctx context.Context, cfg *Config) error {
 	}
 
 	routeSync := routeSyncRetrier.Sync
-	gatewayInfraReconciler.TriggerRouteSync = routeSync
+	if gatewayInfraReconciler != nil {
+		gatewayInfraReconciler.TriggerRouteSync = routeSync
+	}
 
 	if err := httpRouteReconciler.SetupWithManager(mgr); err != nil {
 		return errors.Wrap(err, "failed to setup httproute controller")
@@ -688,6 +699,90 @@ func parseLabelSelector(selectorStr string) (*metav1.LabelSelector, error) {
 // getControllerNamespace returns the namespace where the controller is running.
 // It first checks CONTROLLER_NAMESPACE environment variable, then reads from
 // the standard Kubernetes downward API file, falling back to "default".
+// setupGatewayInfraReconciler registers the per-Gateway data-plane reconciler
+// (#479): a dedicated proxy Deployment + config Service (+ optional HPA) per
+// Gateway carrying infrastructure.parametersRef. Status stays with
+// GatewayReconciler. Returns nil (and registers nothing) when the
+// installation disables the feature (MIR-1607): the chart then grants none of
+// the write RBAC the renders need, and the reconciler's HPA informer would
+// need a list/watch the slimmed-down ClusterRole no longer carries —
+// GatewayReconciler refuses opted-in Gateways with a clear condition instead.
+func setupGatewayInfraReconciler(
+	mgr ctrl.Manager,
+	cfg *Config,
+	configResolver *config.Resolver,
+	configTLS *configTLSSetup,
+	defaultNamespace string,
+) (*GatewayInfraReconciler, error) {
+	if cfg.DisablePerGatewayDataPlanes {
+		return nil, nil //nolint:nilnil // nil reconciler IS the disabled outcome, not an error
+	}
+
+	controllerPodSelector, err := parseLabelSelector(cfg.ControllerPodSelector)
+	if err != nil {
+		return nil, errors.Wrap(err, "invalid --controller-pod-selector")
+	}
+
+	monitoringSelector, err := parseLabelSelector(cfg.MonitoringNamespaceSelector)
+	if err != nil {
+		return nil, errors.Wrap(err, "invalid --monitoring-namespace-selector")
+	}
+
+	gatewayInfraReconciler := &GatewayInfraReconciler{
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		ControllerName: cfg.ControllerName,
+		ConfigResolver: configResolver,
+		Recorder:       mgr.GetEventRecorder("gateway-infra-controller"),
+		RenderDefaults: render.Defaults{
+			ProxyImage:         cfg.ProxyImage,
+			TunnelProtocol:     cfg.TunnelProtocol,
+			WSIdleTimeout:      cfg.WSIdleTimeout,
+			MirrorMaxInFlight:  cfg.MirrorMaxInFlight,
+			ConfigAPIPort:      cfg.ProxyConfigAPIPort,
+			AllowXOriginalHost: cfg.ProxyAllowXOriginalHost,
+		},
+		ControllerNamespace:         defaultNamespace,
+		MonitoringNamespaceSelector: monitoringSelector,
+		ControllerPodSelector:       controllerPodSelector,
+		RenderNetworkPolicy:         cfg.RenderNetworkPolicy,
+		ClusterDomain:               cfg.ClusterDomain,
+	}
+
+	if configTLS != nil {
+		gatewayInfraReconciler.ConfigAuthority = configTLS.authority
+	}
+
+	if err := gatewayInfraReconciler.SetupWithManager(mgr); err != nil {
+		return nil, errors.Wrap(err, "failed to setup gateway infra controller")
+	}
+
+	return gatewayInfraReconciler, nil
+}
+
+// secretCacheNamespaces builds the cache.ByObject namespace set for a scoped
+// Secret cache, or nil for the cluster-wide default when no list is
+// configured. The controller's own namespace is always folded in: the
+// startup-critical Secrets (the generated config-API auth token, the config
+// TLS CA and leaf) live there, and a list that accidentally omitted it would
+// brick the controller rather than scope it.
+func secretCacheNamespaces(configured []string) map[string]cache.Config {
+	if len(configured) == 0 {
+		return nil
+	}
+
+	namespaces := make(map[string]cache.Config, len(configured)+1)
+	namespaces[getControllerNamespace()] = cache.Config{}
+
+	for _, namespace := range configured {
+		if trimmed := strings.TrimSpace(namespace); trimmed != "" {
+			namespaces[trimmed] = cache.Config{}
+		}
+	}
+
+	return namespaces
+}
+
 func getControllerNamespace() string {
 	// Allow override via environment variable (useful for testing)
 	if ns := os.Getenv("CONTROLLER_NAMESPACE"); ns != "" {
