@@ -232,7 +232,10 @@ func buildClientCertResolvedRefsCondition(generation int64, now metav1.Time, err
 		ObservedGeneration: generation,
 		LastTransitionTime: now,
 		Reason:             string(reason),
-		Message:            err.Error(),
+		// Capped: the out-of-scope diagnostic (MIR-1676) carries a Secret
+		// name of up to 253 chars plus the sentinel suffix; its word order
+		// keeps the namespace and remedy ahead of any cut.
+		Message: truncateMessage(err.Error()),
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -111,6 +112,34 @@ func TestSecretScopeMessage(t *testing.T) {
 
 	_, ok = secretScopeMessage(nil)
 	assert.False(t, ok)
+}
+
+// TestMissingSecretMessage_BoundaryLength pins the condition-message cap
+// (maxConditionMessageLength, 256) on the scope diagnostic: with a
+// maximum-length namespace (63) and Secret name (253) the message stays
+// within the cap, and because the remedy precedes the variable-length name,
+// the cut can only ever eat the name — never the namespace or the
+// extraSecretNamespaces remedy.
+func TestMissingSecretMessage_BoundaryLength(t *testing.T) {
+	t.Parallel()
+
+	longNS := strings.Repeat("n", 63)
+	longName := strings.Repeat("s", 253)
+
+	msg := missingSecretMessage(outOfScopeSecretError(longNS, longName), longNS, longName)
+	assert.LessOrEqual(t, len(msg), maxConditionMessageLength)
+	assert.Contains(t, msg, longNS, "the namespace must survive the cap")
+	assert.Contains(t, msg, "extraSecretNamespaces", "the remedy must survive the cap")
+
+	// A plain NotFound keeps the existing not-found text, and is capped the
+	// same way at boundary lengths (there the trailing "not found" is what
+	// the cut eats — pre-existing phrasing, and the reason still says
+	// InvalidCertificateRef).
+	plain := missingSecretMessage(apierrors.NewNotFound(corev1.Resource(secretsResource), "edge-cert"), "unlisted", "edge-cert")
+	assert.Equal(t, "Secret unlisted/edge-cert not found", plain)
+
+	longPlain := missingSecretMessage(apierrors.NewNotFound(corev1.Resource(secretsResource), longName), longNS, longName)
+	assert.LessOrEqual(t, len(longPlain), maxConditionMessageLength)
 }
 
 // TestSecretScopeClient_ConvertedErrorCarriesMarker pins that the wrapper's

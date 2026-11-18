@@ -85,19 +85,23 @@ func scopeNotFound(err error, namespace, name string) error {
 // and the causeOutOfScopeNamespace cause makes it detectable for
 // secretScopeMessage.
 func outOfScopeSecretError(namespace, name string) *apierrors.StatusError {
-	what := secretsResource
+	what := "its " + secretsResource
 	if name != "" {
 		what = fmt.Sprintf("secret %q", name)
 	}
 
+	// Word order matters: the namespace (bounded at 63 by Kubernetes) and the
+	// remedy come before the variable-length Secret name (up to 253), so when
+	// a consumer caps the message at maxConditionMessageLength the cut can
+	// only ever eat the name — never the remedy.
 	return &apierrors.StatusError{ErrStatus: metav1.Status{
 		Status: metav1.StatusFailure,
 		Code:   http.StatusNotFound,
 		Reason: metav1.StatusReasonNotFound,
 		Message: fmt.Sprintf(
-			"%s not readable: namespace %q is outside the controller's scoped Secret cache (--secret-namespaces); "+
-				"list it in perGatewayDataPlanes.extraSecretNamespaces to admit it",
-			what, namespace),
+			"namespace %q is outside the controller's scoped Secret cache (--secret-namespaces); "+
+				"list it in perGatewayDataPlanes.extraSecretNamespaces to admit %s",
+			namespace, what),
 		Details: &metav1.StatusDetails{
 			Kind:   secretsResource,
 			Name:   name,
@@ -106,16 +110,17 @@ func outOfScopeSecretError(namespace, name string) *apierrors.StatusError {
 	}}
 }
 
-// missingSecretMessage builds the operator-facing message for a NotFound
-// certificate-Secret read: the scope diagnostic (with its remedy) when the
-// scoped cache refused the read, plain not-found when the Secret is genuinely
-// absent.
+// missingSecretMessage builds the operator-facing condition message for a
+// NotFound certificate-Secret read: the scope diagnostic (with its remedy)
+// when the scoped cache refused the read, plain not-found when the Secret is
+// genuinely absent. Capped at maxConditionMessageLength; the scope
+// diagnostic's word order guarantees a cut only ever eats the Secret name.
 func missingSecretMessage(err error, namespace, name string) string {
 	if scopeMsg, ok := secretScopeMessage(err); ok {
-		return scopeMsg
+		return truncateMessage(scopeMsg)
 	}
 
-	return fmt.Sprintf("Secret %s/%s not found", namespace, name)
+	return truncateMessage(fmt.Sprintf("Secret %s/%s not found", namespace, name))
 }
 
 // secretScopeMessage returns the scope diagnostic when err is (or wraps) the
