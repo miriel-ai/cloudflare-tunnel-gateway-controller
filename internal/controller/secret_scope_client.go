@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -21,6 +22,12 @@ const cacheScopeErrorMarker = "because of unknown namespace for the cache"
 
 // secretsResource names the resource in the converted error and its details.
 const secretsResource = "secrets"
+
+// causeOutOfScopeNamespace marks the NotFound scopeNotFound converts an
+// out-of-scope read into, so consumers can tell "outside the controller's
+// scoped Secret cache" apart from a Secret that is genuinely absent and
+// surface the remedy instead of a plain "not found" (MIR-1676).
+const causeOutOfScopeNamespace metav1.CauseType = "OutOfScopeNamespace"
 
 // newSecretScopeClient is the manager's client constructor when the Secret
 // cache is scoped to an explicit namespace list (MIR-1607). It wraps the
@@ -70,6 +77,14 @@ func scopeNotFound(err error, namespace, name string) error {
 		return err
 	}
 
+	return outOfScopeSecretError(namespace, name)
+}
+
+// outOfScopeSecretError builds the deterministic NotFound for a Secret read
+// outside the scoped cache: the message names the namespace and the remedy,
+// and the causeOutOfScopeNamespace cause makes it detectable for
+// secretScopeMessage.
+func outOfScopeSecretError(namespace, name string) *apierrors.StatusError {
 	what := secretsResource
 	if name != "" {
 		what = fmt.Sprintf("secret %q", name)
@@ -83,6 +98,30 @@ func scopeNotFound(err error, namespace, name string) error {
 			"%s not readable: namespace %q is outside the controller's scoped Secret cache (--secret-namespaces); "+
 				"list it in perGatewayDataPlanes.extraSecretNamespaces to admit it",
 			what, namespace),
-		Details: &metav1.StatusDetails{Kind: secretsResource, Name: name},
+		Details: &metav1.StatusDetails{
+			Kind:   secretsResource,
+			Name:   name,
+			Causes: []metav1.StatusCause{{Type: causeOutOfScopeNamespace}},
+		},
 	}}
+}
+
+// secretScopeMessage returns the scope diagnostic when err is (or wraps) the
+// NotFound outOfScopeSecretError builds, and false for every other error —
+// notably a plain NotFound for a Secret that is genuinely absent. Consumers
+// use it to put the out-of-scope remedy on their operator-facing condition
+// message instead of reporting the Secret as missing.
+func secretScopeMessage(err error) (string, bool) {
+	var statusErr *apierrors.StatusError
+	if !errors.As(err, &statusErr) || statusErr.ErrStatus.Details == nil {
+		return "", false
+	}
+
+	for _, cause := range statusErr.ErrStatus.Details.Causes {
+		if cause.Type == causeOutOfScopeNamespace {
+			return statusErr.ErrStatus.Message, true
+		}
+	}
+
+	return "", false
 }

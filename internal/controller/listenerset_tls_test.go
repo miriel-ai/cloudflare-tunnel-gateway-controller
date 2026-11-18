@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 )
@@ -60,6 +61,40 @@ func TestResolveListenerEntryRefs_SecretNotFound(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, metav1.ConditionFalse, check.Status)
 	assert.Equal(t, string(gatewayv1.ListenerReasonInvalidCertificateRef), check.Reason)
+}
+
+// TestResolveListenerEntryRefs_OutOfScopeNamespace pins MIR-1676 for
+// ListenerSet entries: the scoped cache's deterministic NotFound must surface
+// the scope diagnostic (with the extraSecretNamespaces remedy) on the entry's
+// ResolvedRefs verdict, not a plain "not found".
+func TestResolveListenerEntryRefs_OutOfScopeNamespace(t *testing.T) {
+	t.Parallel()
+
+	ls := &gatewayv1.ListenerSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "ls", Namespace: "unlisted"},
+	}
+	entry := &gatewayv1.ListenerEntry{
+		Name: "https", Port: 443, Protocol: gatewayv1.HTTPSProtocolType,
+		TLS: &gatewayv1.ListenerTLSConfig{
+			CertificateRefs: []gatewayv1.SecretObjectReference{
+				{Name: "edge-cert"},
+			},
+		},
+	}
+
+	cli := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, key client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return outOfScopeSecretError(key.Namespace, key.Name)
+		},
+	}).Build()
+
+	check, err := resolveListenerEntryRefs(context.Background(), cli, ls, entry)
+	require.NoError(t, err)
+	assert.Equal(t, metav1.ConditionFalse, check.Status)
+	assert.Equal(t, string(gatewayv1.ListenerReasonInvalidCertificateRef), check.Reason)
+	assert.Contains(t, check.Message, `namespace "unlisted"`, "the message must name the out-of-scope namespace")
+	assert.Contains(t, check.Message, "extraSecretNamespaces", "the message must carry the remedy, not plain not-found")
+	assert.NotContains(t, check.Message, "not found")
 }
 
 func TestResolveListenerEntryRefs_WrongSecretType(t *testing.T) {

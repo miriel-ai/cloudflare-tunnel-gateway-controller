@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -81,6 +82,56 @@ func TestSecretScopeClient_OtherErrorsAndHitsPassThrough(t *testing.T) {
 	err = wrapped.Get(context.Background(), types.NamespacedName{Namespace: "listed", Name: "tok"}, &got)
 	require.Error(t, err)
 	assert.False(t, apierrors.IsNotFound(err), "a genuine failure must stay transient")
+}
+
+// TestSecretScopeMessage pins the marker contract consumers rely on
+// (MIR-1676): the converted NotFound carries a detectable cause, and
+// secretScopeMessage recovers its diagnostic — through wrapping — while
+// refusing a plain NotFound, so "outside the watched namespaces" is never
+// reported for a Secret that is genuinely absent.
+func TestSecretScopeMessage(t *testing.T) {
+	t.Parallel()
+
+	scopeErr := outOfScopeSecretError("unlisted", "edge-cert")
+
+	msg, ok := secretScopeMessage(scopeErr)
+	require.True(t, ok, "the converted out-of-scope error must be recognised")
+	assert.Contains(t, msg, `namespace "unlisted"`)
+	assert.Contains(t, msg, "extraSecretNamespaces", "the diagnostic must carry the remedy")
+
+	msg, ok = secretScopeMessage(fmt.Errorf("reading Secret: %w", scopeErr))
+	require.True(t, ok, "wrapping must not hide the marker (errors.As)")
+	assert.Contains(t, msg, "extraSecretNamespaces")
+
+	_, ok = secretScopeMessage(apierrors.NewNotFound(corev1.Resource(secretsResource), "edge-cert"))
+	assert.False(t, ok, "a plain NotFound (Secret genuinely absent) must not match")
+
+	_, ok = secretScopeMessage(errAPIServerDown)
+	assert.False(t, ok, "a non-status error must not match")
+
+	_, ok = secretScopeMessage(nil)
+	assert.False(t, ok)
+}
+
+// TestSecretScopeClient_ConvertedErrorCarriesMarker pins that the wrapper's
+// own conversion path produces the marked error secretScopeMessage detects —
+// the constructor and the Get/List paths cannot drift apart.
+func TestSecretScopeClient_ConvertedErrorCarriesMarker(t *testing.T) {
+	t.Parallel()
+
+	inner := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return errOutOfScopeGet
+		},
+	}).Build()
+	wrapped := &secretScopeClient{Client: inner}
+
+	err := wrapped.Get(context.Background(), types.NamespacedName{Namespace: "unlisted", Name: "edge-cert"}, &corev1.Secret{})
+	require.Error(t, err)
+
+	msg, ok := secretScopeMessage(err)
+	require.True(t, ok, "the Get conversion must carry the out-of-scope marker")
+	assert.Contains(t, msg, "extraSecretNamespaces")
 }
 
 // TestSecretScopeClient_ListConversion pins the same contract for List, which

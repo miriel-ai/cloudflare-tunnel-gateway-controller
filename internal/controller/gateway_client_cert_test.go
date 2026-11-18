@@ -23,6 +23,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -235,6 +236,30 @@ func TestLoadGatewayClientCertPEM_SecretNotFound(t *testing.T) {
 	_, _, err := loadGatewayClientCertPEM(context.Background(), cli, gateway, alwaysAllowGrant)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errGatewayClientCertSecretNotFound)
+}
+
+// TestLoadGatewayClientCertPEM_OutOfScopeNamespace pins MIR-1676 for the
+// client-cert ref: the scoped cache's deterministic NotFound must keep the
+// errGatewayClientCertSecretNotFound sentinel (errors.Is, so the ResolvedRefs
+// reason stays InvalidClientCertificateRef) while the error message — which
+// becomes the condition message — carries the scope diagnostic and remedy.
+func TestLoadGatewayClientCertPEM_OutOfScopeNamespace(t *testing.T) {
+	t.Parallel()
+
+	gateway := gatewayWithClientCertRef("unlisted", "gw", "edge-cert", nil)
+
+	scheme := newClientCertScheme(t)
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, key client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return outOfScopeSecretError(key.Namespace, key.Name)
+		},
+	}).Build()
+
+	_, _, err := loadGatewayClientCertPEM(context.Background(), cli, gateway, alwaysAllowGrant)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errGatewayClientCertSecretNotFound)
+	assert.Contains(t, err.Error(), `namespace "unlisted"`, "the message must name the out-of-scope namespace")
+	assert.Contains(t, err.Error(), "extraSecretNamespaces", "the message must carry the remedy")
 }
 
 func TestLoadGatewayClientCertPEM_WrongSecretType(t *testing.T) {

@@ -2398,9 +2398,18 @@ func (r *GatewayReconciler) validateSecretExists(
 	}, secret)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			// The scoped Secret cache reports an out-of-scope read as a
+			// deterministic NotFound whose message carries the remedy
+			// (extraSecretNamespaces); surface that diagnostic instead of
+			// claiming the Secret is absent (MIR-1676).
+			msg := fmt.Sprintf("Secret %s/%s not found", namespace, ref.Name)
+			if scopeMsg, ok := secretScopeMessage(err); ok {
+				msg = scopeMsg
+			}
+
 			return metav1.ConditionFalse,
 				string(gatewayv1.ListenerReasonInvalidCertificateRef),
-				fmt.Sprintf("Secret %s/%s not found", namespace, ref.Name), nil
+				msg, nil
 		}
 
 		return "", "", "", errors.Wrapf(err, "getting Secret %s/%s", namespace, ref.Name)
