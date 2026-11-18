@@ -90,6 +90,17 @@ spec:
                   CloudflareCredentialsSecretRef references a Secret containing Cloudflare API credentials.
                   The Secret must hold a valid Cloudflare API token under the key named by
                   Key, which defaults to "api-token".
+
+                  Optional. Without it the controller runs in no-API mode: it makes no
+                  Cloudflare API calls at all and does not manage the tunnel's ingress
+                  document, which only feeds the Cloudflare dashboard — request routing is
+                  handled entirely by the in-process proxy, so Gateways, HTTPRoutes and
+                  GRPCRoutes work unchanged. Use it when another system owns the tunnel's
+                  configuration and the cluster should hold only the connector token.
+                  Per-Gateway dedicated data planes need an API credential to verify their
+                  tunnel claims, so in no-API mode they are refused unless their
+                  GatewayConfig carries its own credentials override; the shared data
+                  plane is unaffected.
                 properties:
                   key:
                     description: Key in the Secret. Defaults to "api-token".
@@ -168,7 +179,6 @@ spec:
                 pattern: ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$
                 type: string
             required:
-            - cloudflareCredentialsSecretRef
             - tunnelID
             type: object
           status:

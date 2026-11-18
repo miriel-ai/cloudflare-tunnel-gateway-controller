@@ -58,8 +58,14 @@ App Version: {{ .Chart.AppVersion }}
 {{- if .Values.gatewayClassConfig.create }}
 
   📋 GatewayClassConfig: Configuration is managed via GatewayClassConfig CRD.
+{{- if .Values.gatewayClassConfig.cloudflareCredentialsSecretRef.name }}
      Ensure your Cloudflare credentials Secret exists:
        kubectl get secret {{ .Values.gatewayClassConfig.cloudflareCredentialsSecretRef.name }} -n {{ .Release.Namespace }}
+{{- else }}
+     No Cloudflare credentials Secret is referenced (no-API mode): the
+     controller makes no Cloudflare API calls and leaves the tunnel's
+     dashboard-only ingress document unmanaged.
+{{- end }}
 {{- end }}
 
 {{- if and (gt (.Values.replicaCount | int) 1) (not (.Values.podDisruptionBudget | default dict).enabled) }}
