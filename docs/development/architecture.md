@@ -94,8 +94,8 @@ spec:
 Resolves GatewayClassConfig from GatewayClass `parametersRef`:
 
 1. Reads GatewayClassConfig by name from parametersRef
-2. Fetches Cloudflare credentials from referenced Secret
-3. Auto-detects account ID via Cloudflare API if not specified
+2. Fetches Cloudflare credentials from the referenced Secret — only when `cloudflareCredentialsSecretRef` is set; without it the resolver returns an empty API token (no-API mode) and reads no Secret
+3. Auto-detects account ID via Cloudflare API if not specified — only when credentials are set
 
 ### GatewayReconciler
 
@@ -124,7 +124,7 @@ Watches HTTPRoute resources and synchronizes them to Cloudflare:
 
 1. **Filtering**: Only processes routes referencing managed Gateways
 2. **Full Sync**: On any change, rebuilds the entire desired tunnel configuration
-3. **API Update**: Skips the Cloudflare API entirely while the desired document matches the copy the controller read or wrote for that tunnel less than 5 minutes ago; otherwise diffs against the deployed configuration and writes only when the document changed (the configurations endpoint is whole-document; steady-state syncs skip the write)
+3. **API Update**: With no Cloudflare credentials (no-API mode) this step is skipped entirely — no API call is made and the ingress document is left unmanaged. Otherwise it skips the Cloudflare API while the desired document matches the copy the controller read or wrote for that tunnel less than 5 minutes ago, and beyond that diffs against the deployed configuration and writes only when the document changed (the configurations endpoint is whole-document; steady-state syncs skip the write)
 4. **Status Update**: Sets route acceptance conditions
 
 ```mermaid
@@ -140,7 +140,9 @@ sequenceDiagram
     HR->>Builder: Build ingress rules
     Builder->>Builder: Sort by priority
     Builder-->>HR: Cloudflare ingress config
-    alt matches the cached document (under 5 minutes old)
+    alt no Cloudflare credentials (no-API mode)
+        HR->>HR: Skip all API calls; document unmanaged
+    else matches the cached document (under 5 minutes old)
         HR->>HR: Skip read and write
     else
         HR->>CF: Get current tunnel configuration

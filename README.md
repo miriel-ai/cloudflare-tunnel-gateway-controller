@@ -123,7 +123,7 @@ Create an API token at [Cloudflare API Tokens](https://dash.cloudflare.com/profi
 
 Account ID is auto-detected from the API token when not explicitly provided (works if the token has access to a single account).
 
-The token is optional. Skip it (and omit `cloudflareCredentialsSecretRef`) to run in no-API mode: routing is unaffected, the controller just stops maintaining the dashboard-only tunnel ingress document. Use it when a central system owns the tunnel's configuration and the cluster should hold nothing stronger than its own connector token — which also means supplying no per-`GatewayConfig` credential overrides, since those are stored and used like any credential.
+The token is optional. Skip it (and omit `cloudflareCredentialsSecretRef`) to run in no-API mode: shared-plane routing is unaffected, and the controller stops maintaining the dashboard-only tunnel ingress document. Dedicated per-Gateway planes still need a credential, so a dedicated Gateway without a `GatewayConfig` credential override is refused. Use it when a central system owns the tunnel's configuration and the cluster should hold nothing stronger than its own connector token — which also means supplying no per-`GatewayConfig` credential overrides, since those are stored and used like any credential.
 
 ## Installation
 
