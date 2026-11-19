@@ -35,6 +35,8 @@ temp/
 !vendor/**/*credentials*.yaml
 *.key
 *.pem
+# Public certificates the eMudhra distrust check embeds and pins.
+!hack/emudhra-check/fixtures/*.pem
 .env
 *.secret
 
