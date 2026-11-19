@@ -191,10 +191,13 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      # The tag is immutable: it is created once and never moved. If it
-      # already exists (a re-run), it is left alone and only accepted when it
-      # already verifies under the signing identity; anything else fails
-      # rather than overwrite it or leave an unsigned image under it.
+      # The tag is immutable: it is created once and never moved. Whether it
+      # exists is decided only by a registry answer of "not found"; any other
+      # error stops the job without writing. An existing tag is accepted when
+      # it already verifies under the signing identity, or when it is the
+      # index an earlier attempt of this same run created from exactly these
+      # platform images and failed to sign (so a retry can finish the job).
+      # Anything else is left alone and fails the job.
       - name: Create tagged index
         id: index
         env:
@@ -203,26 +206,46 @@ jobs:
         run: |
           set -euo pipefail
 
-          if docker buildx imagetools inspect "${IMAGE}:${TAG}" >/dev/null 2>&1; then
-            existing="$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{.Manifest.Digest}}')"
-            echo "${IMAGE}:${TAG} already exists (${existing}); not overwriting it."
-            cosign verify \
-              --certificate-identity "${CERT_IDENTITY}" \
-              --certificate-oidc-issuer "${CERT_OIDC_ISSUER}" \
-              "${IMAGE}@${existing}" >/dev/null
-            echo "digest=${existing}" >> "${GITHUB_OUTPUT}"
-            echo "created=false" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
           # Exactly the two per-platform images this run built, one per arch.
           cd /tmp/digests
           refs=()
+          want=()
           for digest in *; do
             [[ "${digest}" =~ ^[0-9a-f]{64}$ ]] || { echo "unexpected digest file: ${digest}" >&2; exit 1; }
             refs+=("${IMAGE}@sha256:${digest}")
+            want+=("sha256:${digest}")
           done
           [[ "${#refs[@]}" -eq 2 ]] || { echo "want 2 platform images, have ${#refs[@]}" >&2; exit 1; }
+          want_sorted="$(printf '%s\n' "${want[@]}" | sort)"
+
+          err="$(mktemp)"
+          if existing="$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{.Manifest.Digest}}' 2>"${err}")"; then
+            echo "${IMAGE}:${TAG} already exists (${existing}); not overwriting it."
+
+            if cosign verify \
+              --certificate-identity "${CERT_IDENTITY}" \
+              --certificate-oidc-issuer "${CERT_OIDC_ISSUER}" \
+              "${IMAGE}@${existing}" >/dev/null 2>&1; then
+              echo "It already verifies; nothing to do."
+              echo "digest=${existing}" >> "${GITHUB_OUTPUT}"
+              echo "needs_sign=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+
+            children="$(docker buildx imagetools inspect "${IMAGE}@${existing}" --raw | jq -r '.manifests[].digest' | sort)"
+            if [[ "${children}" != "${want_sorted}" ]]; then
+              echo "::error::${IMAGE}:${TAG} exists, is unsigned, and is not made of this run's images. Not overwriting or signing it."
+              exit 1
+            fi
+            echo "It is this run's own unsigned index; signing it."
+            echo "digest=${existing}" >> "${GITHUB_OUTPUT}"
+            echo "needs_sign=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          elif ! grep -qiE 'not found|manifest unknown|name unknown' "${err}"; then
+            cat "${err}" >&2
+            echo "::error::could not tell whether ${IMAGE}:${TAG} exists; not writing the tag."
+            exit 1
+          fi
 
           docker buildx imagetools create --tag "${IMAGE}:${TAG}" "${refs[@]}"
 
@@ -231,12 +254,12 @@ jobs:
           [[ "${platforms}" == "linux/amd64 linux/arm64 " ]] || { echo "unexpected platforms: ${platforms}" >&2; exit 1; }
 
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
-          echo "created=true" >> "${GITHUB_OUTPUT}"
+          echo "needs_sign=true" >> "${GITHUB_OUTPUT}"
 
       # Sign the index by digest, then verify it the way the Ilmarin mirror
       # will, so a signature that would not pass fails this job.
       - name: Sign and verify
-        if: steps.index.outputs.created == 'true'
+        if: steps.index.outputs.needs_sign == 'true'
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
           DIGEST: ${{ steps.index.outputs.digest }}
