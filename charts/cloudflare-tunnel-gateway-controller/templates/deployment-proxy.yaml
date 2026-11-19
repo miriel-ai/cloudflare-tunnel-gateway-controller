@@ -70,14 +70,12 @@ spec:
             # internal/controller/proxy_auth_secret.go) -- not chart
             # templating, so it's correct under GitOps controllers that
             # render client-side (a template-time `lookup` cannot see prior
-            # state there). Either way this is the only pod-level
-            # secretKeyRef for this token; the controller's own pod never
-            # carries one.
-            - name: PROXY_AUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "cf-tunnel-gw-ctrl.proxyAuthTokenSecretName" . }}
-                  key: {{ .Values.proxy.authTokenSecretRef.key | default "auth-token" }}
+            # state there). Like the connector token above, it is a mounted
+            # Secret file (the auth-token volume below), never a secretKeyRef
+            # env (MIR-1692); the controller's own pod references the Secret
+            # through neither mechanism.
+            - name: PROXY_AUTH_TOKEN_FILE
+              value: /etc/cf-proxy/auth-token/auth-token
             {{- with .Values.proxy.websocket.dialTimeout }}
             - name: PROXY_WS_DIAL_TIMEOUT
               value: {{ . | quote }}
@@ -127,6 +125,9 @@ spec:
           volumeMounts:
             - name: tunnel-token
               mountPath: /etc/cf-proxy/tunnel-token
+              readOnly: true
+            - name: auth-token
+              mountPath: /etc/cf-proxy/auth-token
               readOnly: true
             {{- if (eq (include "cf-tunnel-gw-ctrl.configAPITLSEnabled" .) "true") }}
             - name: config-tls
@@ -185,6 +186,16 @@ spec:
             items:
               - key: {{ .Values.proxy.tunnelTokenSecretRef.key | default "tunnel-token" }}
                 path: tunnel-token
+        # When the controller generates this Secret (no bring-your-own
+        # authTokenSecretRef), it does so as one of its first startup actions;
+        # until it exists the proxy pod waits in ContainerCreating rather than
+        # serving an unauthenticated config API.
+        - name: auth-token
+          secret:
+            secretName: {{ include "cf-tunnel-gw-ctrl.proxyAuthTokenSecretName" . }}
+            items:
+              - key: {{ .Values.proxy.authTokenSecretRef.key | default "auth-token" }}
+                path: auth-token
         {{- if (eq (include "cf-tunnel-gw-ctrl.configAPITLSEnabled" .) "true") }}
         # The controller creates this Secret on its first issuance pass, run by
         # the elected replica when leader election is on; until then the pod

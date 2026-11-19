@@ -179,11 +179,17 @@ func resolveProxyAuthToken(ctx context.Context, mgr ctrl.Manager, cfg *Config) (
 // A Secret at the expected name with no (or an empty) value at dataKey is a
 // broken state -- fail closed rather than silently hand back an empty token
 // that would make the config API accept an empty Bearer value as valid.
+// Surrounding whitespace is trimmed to match the proxy's own read of its
+// mounted PROXY_AUTH_TOKEN_FILE: Secret values written with `kubectl create
+// secret --from-file` or heredocs routinely carry a trailing newline that is
+// not part of the token, and an untrimmed controller would push
+// "Bearer <token>\n" against the proxy's trimmed value -- a 401 on every
+// push. A value that trims to nothing is the empty case, not a token.
 func readAuthSecretKey(secret *corev1.Secret, key types.NamespacedName, dataKey string) (string, error) {
-	token, ok := secret.Data[dataKey]
-	if !ok || len(token) == 0 {
+	token := strings.TrimSpace(string(secret.Data[dataKey]))
+	if token == "" {
 		return "", errors.Wrapf(errProxyAuthSecretMissingKey, "%s key %q", key, dataKey)
 	}
 
-	return string(token), nil
+	return token, nil
 }

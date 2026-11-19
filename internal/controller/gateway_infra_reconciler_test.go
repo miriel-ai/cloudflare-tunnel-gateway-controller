@@ -763,7 +763,7 @@ func TestGatewayInfraReconciler_NoProxyImageRendersNothing(t *testing.T) {
 // TestGatewayInfraReconciler_GeneratesAuthSecret pins the fail-secure
 // default: a GatewayConfig without an explicit authTokenSecretRef gets a
 // controller-generated, controller-owned auth Secret with a non-empty token,
-// and the rendered Deployment wires PROXY_AUTH_TOKEN to it.
+// and the rendered Deployment mounts it as the PROXY_AUTH_TOKEN_FILE file.
 func TestGatewayInfraReconciler_GeneratesAuthSecret(t *testing.T) {
 	t.Parallel()
 
@@ -784,13 +784,23 @@ func TestGatewayInfraReconciler_GeneratesAuthSecret(t *testing.T) {
 
 	var wired bool
 
-	for _, env := range deployment.Spec.Template.Spec.Containers[0].Env {
-		if env.Name == "PROXY_AUTH_TOKEN" && env.ValueFrom.SecretKeyRef.Name == "cf-proxy-edge-auth" {
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.Name == "auth-token" && volume.Secret != nil && volume.Secret.SecretName == "cf-proxy-edge-auth" {
 			wired = true
 		}
 	}
 
-	assert.True(t, wired, "PROXY_AUTH_TOKEN must reference the generated Secret")
+	assert.True(t, wired, "the auth-token volume must reference the generated Secret")
+
+	var fileEnv bool
+
+	for _, env := range deployment.Spec.Template.Spec.Containers[0].Env {
+		if env.Name == "PROXY_AUTH_TOKEN_FILE" && env.Value == "/etc/cf-proxy/auth-token/auth-token" {
+			fileEnv = true
+		}
+	}
+
+	assert.True(t, fileEnv, "PROXY_AUTH_TOKEN_FILE must point at the mounted token file")
 }
 
 // TestGatewayInfraReconciler_NeverRotatesGeneratedAuthToken pins the

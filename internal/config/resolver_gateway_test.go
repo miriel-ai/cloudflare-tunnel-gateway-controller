@@ -348,6 +348,62 @@ func TestResolveForGateway_AuthToken(t *testing.T) {
 	assert.Equal(t, "bearer-secret", resolved.AuthToken)
 }
 
+// TestResolveForGateway_AuthTokenTrimsWhitespace pins that the resolver
+// normalizes the token exactly like the proxy's PROXY_AUTH_TOKEN_FILE read
+// does: Secret values written with `kubectl create secret --from-file` or
+// heredocs routinely carry a trailing newline that is not part of the token.
+// Without the trim the controller would push "Bearer <token>\n" while the
+// proxy compares against the trimmed value, and every push would 401.
+func TestResolveForGateway_AuthTokenTrimsWhitespace(t *testing.T) {
+	t.Parallel()
+
+	gwConfig := &v1alpha1.GatewayConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "edge-config", Namespace: testGwNamespace},
+		Spec: v1alpha1.GatewayConfigSpec{
+			TunnelTokenSecretRef: v1alpha1.LocalSecretReference{Name: "edge-tunnel-token"},
+			AuthTokenSecretRef:   &v1alpha1.LocalSecretReference{Name: "edge-auth"},
+		},
+	}
+	authSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "edge-auth", Namespace: testGwNamespace},
+		Data:       map[string][]byte{"auth-token": []byte("bearer-secret\n")},
+	}
+
+	objects := append(classFixtures(), gwConfig, tokenSecret(t), authSecret)
+	resolver := newGatewayResolver(t, objects...)
+
+	resolved, err := resolver.ResolveForGateway(context.Background(), gatewayWithInfra("cf.k8s.lex.la", "GatewayConfig", "edge-config"))
+	require.NoError(t, err)
+	assert.Equal(t, "bearer-secret", resolved.AuthToken,
+		"the resolver must hand back the same normalized token the proxy reads from its mounted file")
+}
+
+// TestResolveForGateway_AuthTokenWhitespaceOnlyIsInvalid pins the fail-closed
+// twin: a key holding only whitespace trims to nothing and is the same broken
+// configuration as an empty key, never a usable token.
+func TestResolveForGateway_AuthTokenWhitespaceOnlyIsInvalid(t *testing.T) {
+	t.Parallel()
+
+	gwConfig := &v1alpha1.GatewayConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "edge-config", Namespace: testGwNamespace},
+		Spec: v1alpha1.GatewayConfigSpec{
+			TunnelTokenSecretRef: v1alpha1.LocalSecretReference{Name: "edge-tunnel-token"},
+			AuthTokenSecretRef:   &v1alpha1.LocalSecretReference{Name: "edge-auth"},
+		},
+	}
+	authSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "edge-auth", Namespace: testGwNamespace},
+		Data:       map[string][]byte{"auth-token": []byte(" \n")},
+	}
+
+	objects := append(classFixtures(), gwConfig, tokenSecret(t), authSecret)
+	resolver := newGatewayResolver(t, objects...)
+
+	_, err := resolver.ResolveForGateway(context.Background(), gatewayWithInfra("cf.k8s.lex.la", "GatewayConfig", "edge-config"))
+	require.Error(t, err, "a whitespace-only auth token must not resolve")
+	assert.ErrorIs(t, err, config.ErrInvalidParameters)
+}
+
 // TestResolveForGateway_GeneratedAuthTokenFallback pins the fail-secure
 // default: a GatewayConfig WITHOUT authTokenSecretRef resolves its push auth
 // from the controller-generated Secret — never an empty token, which would

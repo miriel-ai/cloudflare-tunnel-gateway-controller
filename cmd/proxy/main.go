@@ -730,7 +730,7 @@ func metricsEnabled() bool {
 // warnIfNoAuth logs the missing-auth warning shared by both run modes.
 func warnIfNoAuth(logger *slog.Logger, authToken string) {
 	if authToken == "" {
-		logger.Warn("config API running WITHOUT authentication -- set PROXY_AUTH_TOKEN for production use")
+		logger.Warn("config API running WITHOUT authentication -- set PROXY_AUTH_TOKEN_FILE (or PROXY_AUTH_TOKEN) for production use")
 	}
 }
 
@@ -745,16 +745,27 @@ const (
 )
 
 // errProxyAuthTokenEmpty is the sentinel resolveAuthToken returns when
-// PROXY_AUTH_TOKEN is set but empty.
+// PROXY_AUTH_TOKEN is set but empty, or when the PROXY_AUTH_TOKEN_FILE file
+// holds nothing.
 var errProxyAuthTokenEmpty = errors.New("PROXY_AUTH_TOKEN is set but empty")
+
+// errProxyAuthTokenFileEmpty is the sentinel for PROXY_AUTH_TOKEN_FILE set to
+// an empty path.
+var errProxyAuthTokenFileEmpty = errors.New("PROXY_AUTH_TOKEN_FILE is set but empty")
+
+// errProxyAuthTokenAmbiguous is the sentinel for PROXY_AUTH_TOKEN and
+// PROXY_AUTH_TOKEN_FILE both being set.
+var errProxyAuthTokenAmbiguous = errors.New(
+	"PROXY_AUTH_TOKEN and PROXY_AUTH_TOKEN_FILE are both set; configure exactly one")
 
 // errProxyAuthTokenMissing is the sentinel resolveAuthToken returns when tunnel
 // mode would run its config API with no Bearer check at all.
 // It names the way out and the accepted spellings because an operator meets
 // this as a crash loop, not as a doc page.
 var errProxyAuthTokenMissing = errors.New(
-	"PROXY_AUTH_TOKEN is not set: the config API would accept an unauthenticated routing table. " +
-		"Set a token, or set " + allowUnauthenticatedConfigAPIEnv + "=1 (or =true) to run without one")
+	"neither PROXY_AUTH_TOKEN_FILE nor PROXY_AUTH_TOKEN is set: the config API would accept an " +
+		"unauthenticated routing table. Set a token, or set " +
+		allowUnauthenticatedConfigAPIEnv + "=1 (or =true) to run without one")
 
 // allowUnauthenticatedConfigAPIEnv opts a tunnel-mode deployment back into an
 // unauthenticated config API. Deliberately a second variable rather than an
@@ -762,16 +773,28 @@ var errProxyAuthTokenMissing = errors.New(
 // a misconfiguration must not be able to spell the same thing as consent.
 const allowUnauthenticatedConfigAPIEnv = "PROXY_ALLOW_UNAUTHENTICATED_CONFIG_API"
 
-// resolveAuthToken reads PROXY_AUTH_TOKEN, distinguishing the variable being
-// unset from being set to an empty string -- os.Getenv alone cannot tell
-// these apart, and the two mean different things.
+// resolveAuthToken reads the config-API bearer token, distinguishing a
+// variable being unset from being set to an empty string -- os.Getenv alone
+// cannot tell these apart, and the two mean different things.
 //
-// An empty value is a broken configuration rather than a choice to run open:
-// the chart wires this variable unconditionally (see
-// internal/controller/proxy_auth_secret.go), so its presence signals that
-// authentication was INTENDED, and an auth Secret whose key resolved to an
-// empty string must fail the same way the controller already fails closed on
-// that identical Secret (readAuthSecretKey).
+// Two delivery paths, exactly one of which may be configured, mirroring
+// resolveTunnelToken (MIR-1607):
+//   - PROXY_AUTH_TOKEN_FILE names a file holding the token — the chart's
+//     path: a mounted Secret, so the token never sits in the process
+//     environment (readable via /proc/<pid>/environ and routinely captured
+//     by crash dumps and debug tooling);
+//   - PROXY_AUTH_TOKEN carries the value directly, kept for hand-built
+//     deployments and local runs.
+//
+// An empty value — either variable, or an empty file — is a broken
+// configuration rather than a choice to run open: the chart wires the file
+// variable unconditionally (see internal/controller/proxy_auth_secret.go), so
+// its presence signals that authentication was INTENDED, and an auth Secret
+// whose key resolved to an empty string must fail the same way the controller
+// already fails closed on that identical Secret (readAuthSecretKey). Both set
+// is refused too — there is no env fallback: silently preferring one source
+// would keep a stale token authenticating after the operator switched to the
+// other.
 //
 // requireAuth carries the run mode. Tunnel mode refuses an unset token as well,
 // because there the config API listens on every interface and a successful PUT
@@ -780,11 +803,42 @@ const allowUnauthenticatedConfigAPIEnv = "PROXY_ALLOW_UNAUTHENTICATED_CONFIG_API
 func resolveAuthToken(requireAuth configAPIAuth) (string, error) {
 	token, isSet := os.LookupEnv("PROXY_AUTH_TOKEN")
 
+	path, pathIsSet := os.LookupEnv("PROXY_AUTH_TOKEN_FILE")
+	if pathIsSet {
+		if isSet {
+			return "", errProxyAuthTokenAmbiguous
+		}
+
+		return readAuthTokenFile(path)
+	}
+
 	switch {
 	case isSet && token == "":
 		return "", errProxyAuthTokenEmpty
 	case !isSet && bool(requireAuth) && !isTruthyEnv(allowUnauthenticatedConfigAPIEnv):
 		return "", errProxyAuthTokenMissing
+	}
+
+	return token, nil
+}
+
+// readAuthTokenFile reads the config-API bearer token from the file
+// PROXY_AUTH_TOKEN_FILE names. Surrounding whitespace is trimmed: Secret
+// files written with `kubectl create secret --from-file` or heredocs
+// routinely carry a trailing newline that is not part of the token.
+func readAuthTokenFile(path string) (string, error) {
+	if path == "" {
+		return "", errProxyAuthTokenFileEmpty
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading PROXY_AUTH_TOKEN_FILE: %w", err)
+	}
+
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("%w: %s holds no token", errProxyAuthTokenEmpty, path)
 	}
 
 	return token, nil

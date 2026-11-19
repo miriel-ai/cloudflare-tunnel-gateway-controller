@@ -180,6 +180,32 @@ func TestEnsureProxyAuthSecret_ReusesExisting(t *testing.T) {
 		"an existing token must never be overwritten")
 }
 
+// TestEnsureProxyAuthSecret_TrimsSurroundingWhitespace pins that the
+// controller normalizes the token exactly like the proxy's
+// PROXY_AUTH_TOKEN_FILE read does: Secret values written with `kubectl create
+// secret --from-file` or heredocs routinely carry a trailing newline that is
+// not part of the token. Without the trim the controller would send
+// "Bearer <token>\n" while the proxy compares against the trimmed value, and
+// every push would 401.
+func TestEnsureProxyAuthSecret_TrimsSurroundingWhitespace(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	key := proxyAuthSecretKey()
+	existing := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+		Data:       map[string][]byte{generatedAuthTokenKey: []byte("padded-token\n")},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+
+	token, err := ensureProxyAuthSecret(context.Background(), fakeClient, key, generatedAuthTokenKey, true)
+	require.NoError(t, err)
+	assert.Equal(t, "padded-token", token,
+		"the controller must push with the same normalized token the proxy reads from its mounted file")
+}
+
 // TestEnsureProxyAuthSecret_ErrorsOnMissingKey fails closed: a Secret at the
 // expected name with no value at dataKey, or an empty one -- the realistic
 // case is a hand-created Secret with a typo'd key name -- is a broken state,
@@ -195,6 +221,7 @@ func TestEnsureProxyAuthSecret_ErrorsOnMissingKey(t *testing.T) {
 	}{
 		{name: "key absent", data: map[string][]byte{"wrong-key": []byte("irrelevant")}},
 		{name: "key present but empty", data: map[string][]byte{generatedAuthTokenKey: {}}},
+		{name: "key present but only whitespace", data: map[string][]byte{generatedAuthTokenKey: []byte(" \n")}},
 		{name: "no data at all", data: nil},
 	}
 

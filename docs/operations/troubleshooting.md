@@ -115,8 +115,10 @@ kubectl logs --namespace cloudflare-tunnel-system \
 ```
 
 ```text
-{"time":"...","level":"ERROR","msg":"refusing to start with a broken config-API auth configuration","error":"PROXY_AUTH_TOKEN is set but empty"}
+{"time":"...","level":"ERROR","msg":"refusing to start with a broken config-API auth configuration","error":"PROXY_AUTH_TOKEN is set but empty: /etc/cf-proxy/auth-token/auth-token holds no token"}
 ```
+
+(The chart delivers the token as a mounted Secret file read via `PROXY_AUTH_TOKEN_FILE`, so the error names the file; a hand-written Deployment wiring the direct-value `PROXY_AUTH_TOKEN` env gets the same refusal without the path.)
 
 **Cause**: a Secret already exists at the name the controller expects for the shared proxy's config-API bearer token, but its `auth-token` key is missing or empty. Most often this is a hand-created Secret with a typo'd key name. The controller resolves this token once at startup, before wiring any reconciler, and fails closed rather than start with an unusable token: the config API must never be left unauthenticated. Unlike a broken per-Gateway auth Secret, which only stops that one Gateway's data plane, this stops the controller process entirely, because the resolution happens before any Gateway is reconciled.
 
@@ -124,7 +126,7 @@ The controller cannot repair this itself. Its RBAC on Secrets grants `create` bu
 
 !!! danger "A proxy pod already running against a present-but-empty key may be unauthenticated"
 
-    The proxy refuses to start when `PROXY_AUTH_TOKEN` is set but empty, the same fail-closed behavior as the controller -- a *new* proxy pod hitting this broken Secret crash-loops instead of serving anything. But Kubernetes never re-reads a `secretKeyRef` into a running container, so a proxy pod that already started against this Secret *before* the fix reached it (an older image, or before you noticed the problem) is still running with `PROXY_AUTH_TOKEN=""` baked into its environment, still accepting `PUT /config` from anyone with no `Authorization` header. Deleting the Secret and restarting only the controller does not touch that pod. Restart the proxy too.
+    The proxy refuses to start when its auth token resolves to an empty value — a mounted `PROXY_AUTH_TOKEN_FILE` holding nothing, or a `PROXY_AUTH_TOKEN` env set but empty — the same fail-closed behavior as the controller: a *new* proxy pod hitting this broken Secret crash-loops instead of serving anything. But the proxy reads the token once at startup, so a proxy pod that already started against this Secret *before* the fix reached it (an older image, or before you noticed the problem) is still running with an empty token, still accepting `PUT /config` from anyone with no `Authorization` header. Deleting the Secret and restarting only the controller does not touch that pod. Restart the proxy too.
 
 **Solution**: delete the broken Secret and restart both the controller and the proxy, so neither is left running with an empty or stale token.
 
@@ -146,14 +148,14 @@ If `proxy.authTokenSecretRef.name` is set to a Secret you manage yourself, the c
 The proxy exits immediately in tunnel mode with:
 
 ```text
-{"time":"...","level":"ERROR","msg":"refusing to start with a broken config-API auth configuration","error":"PROXY_AUTH_TOKEN is not set: the config API would accept an unauthenticated routing table. Set a token, or set PROXY_ALLOW_UNAUTHENTICATED_CONFIG_API=1 (or =true) to run without one"}
+{"time":"...","level":"ERROR","msg":"refusing to start with a broken config-API auth configuration","error":"neither PROXY_AUTH_TOKEN_FILE nor PROXY_AUTH_TOKEN is set: the config API would accept an unauthenticated routing table. Set a token, or set PROXY_ALLOW_UNAUTHENTICATED_CONFIG_API=1 (or =true) to run without one"}
 ```
 
-The config API listens on every interface and one successful `PUT /config` replaces the whole routing table, so tunnel mode will not start without a Bearer token. Chart installs never see this: the chart wires `PROXY_AUTH_TOKEN` unconditionally and the controller generates a token when you do not supply one. It reaches you on a hand-written proxy Deployment.
+The config API listens on every interface and one successful `PUT /config` replaces the whole routing table, so tunnel mode will not start without a Bearer token. Chart installs never see this: the chart mounts the auth Secret and wires `PROXY_AUTH_TOKEN_FILE` unconditionally, and the controller generates a token when you do not supply one. It reaches you on a hand-written proxy Deployment.
 
 Wire a token, or set `PROXY_ALLOW_UNAUTHENTICATED_CONFIG_API=1` if the config API is reachable only over a path you already control. The acknowledgement is read as `1` or `true`; any other spelling is treated as unset, and the message above is what you get.
 
-A `PROXY_AUTH_TOKEN` that is set but empty is a different problem — see [Config API Auth Secret Missing or Broken](#config-api-auth-secret-missing-or-broken). The acknowledgement does not cover it, in either mode.
+A token that is wired but resolves to nothing — an empty `PROXY_AUTH_TOKEN`, or a `PROXY_AUTH_TOKEN_FILE` naming an empty or unreadable file — is a different problem — see [Config API Auth Secret Missing or Broken](#config-api-auth-secret-missing-or-broken). The acknowledgement does not cover it, in either mode. Setting both variables at once is also refused: there is no env fallback, so exactly one source must be configured.
 
 ### Proxy Pod Stuck NotReady After a Restart
 
