@@ -21,6 +21,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
@@ -1968,6 +1969,38 @@ func TestGatewayReconciler_ValidateSecretExists_NotFound(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, status)
 	assert.Equal(t, string(gatewayv1.ListenerReasonInvalidCertificateRef), reason)
 	assert.Contains(t, msg, "not found")
+}
+
+// TestGatewayReconciler_ValidateSecretExists_OutOfScopeNamespace pins
+// MIR-1676: when the scoped Secret cache refuses the read (the scope client's
+// deterministic NotFound), the listener condition must carry the scope
+// diagnostic and its remedy — not claim the Secret is missing.
+func TestGatewayReconciler_ValidateSecretExists_OutOfScopeNamespace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	fakeClient := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, key client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return outOfScopeSecretError(key.Namespace, key.Name)
+		},
+	}).Build()
+	reconciler := &GatewayReconciler{
+		Client: fakeClient,
+		Scheme: fakeClient.Scheme(),
+	}
+
+	ref := gatewayv1.SecretObjectReference{
+		Name: gatewayv1.ObjectName("edge-cert"),
+	}
+
+	status, reason, msg, err := reconciler.validateSecretExists(ctx, "unlisted", ref)
+	require.NoError(t, err)
+	assert.Equal(t, metav1.ConditionFalse, status)
+	assert.Equal(t, string(gatewayv1.ListenerReasonInvalidCertificateRef), reason)
+	assert.Contains(t, msg, `namespace "unlisted"`, "the message must name the out-of-scope namespace")
+	assert.Contains(t, msg, "extraSecretNamespaces", "the message must carry the remedy, not plain not-found")
+	assert.NotContains(t, msg, "not found")
 }
 
 func TestGatewayReconciler_ValidateSingleCertRef_UnsupportedKind(t *testing.T) {

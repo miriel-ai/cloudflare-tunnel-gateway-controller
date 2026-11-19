@@ -2407,9 +2407,13 @@ func (r *GatewayReconciler) validateSecretExists(
 	}, secret)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			// missingSecretMessage surfaces the scope diagnostic (with the
+			// extraSecretNamespaces remedy) when the scoped Secret cache
+			// refused the read, instead of claiming the Secret is absent
+			// (MIR-1676).
 			return metav1.ConditionFalse,
 				string(gatewayv1.ListenerReasonInvalidCertificateRef),
-				fmt.Sprintf("Secret %s/%s not found", namespace, ref.Name), nil
+				missingSecretMessage(err, namespace, string(ref.Name)), nil
 		}
 
 		return "", "", "", errors.Wrapf(err, "getting Secret %s/%s", namespace, ref.Name)

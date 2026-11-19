@@ -109,10 +109,14 @@ func validateListenerSetSecretExists(
 	err := cli.Get(ctx, client.ObjectKey{Namespace: namespace, Name: string(ref.Name)}, &secret)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			// missingSecretMessage surfaces the scope diagnostic (with the
+			// extraSecretNamespaces remedy) when the scoped Secret cache
+			// refused the read, instead of claiming the Secret is absent
+			// (MIR-1676).
 			return listenerEntryRefsCheck{
 				Status:  metav1.ConditionFalse,
 				Reason:  string(gatewayv1.ListenerReasonInvalidCertificateRef),
-				Message: fmt.Sprintf("Secret %s/%s not found", namespace, ref.Name),
+				Message: missingSecretMessage(err, namespace, string(ref.Name)),
 			}, nil
 		}
 

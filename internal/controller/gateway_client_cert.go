@@ -112,6 +112,16 @@ func loadGatewayClientCertPEM(
 	secret := &corev1.Secret{}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: targetNS, Name: string(ref.Name)}, secret); err != nil {
 		if apierrors.IsNotFound(err) {
+			// The scoped Secret cache reports an out-of-scope read as a
+			// deterministic NotFound whose message carries the remedy
+			// (extraSecretNamespaces). Wrap the sentinel with that diagnostic
+			// so errors.Is keeps matching (the ResolvedRefs reason stays
+			// InvalidClientCertificateRef) while the condition message names
+			// the real cause instead of a missing Secret (MIR-1676).
+			if scopeMsg, ok := secretScopeMessage(err); ok {
+				return nil, nil, errors.Wrapf(errGatewayClientCertSecretNotFound, "%s", scopeMsg)
+			}
+
 			return nil, nil, errGatewayClientCertSecretNotFound
 		}
 
@@ -222,7 +232,10 @@ func buildClientCertResolvedRefsCondition(generation int64, now metav1.Time, err
 		ObservedGeneration: generation,
 		LastTransitionTime: now,
 		Reason:             string(reason),
-		Message:            err.Error(),
+		// Capped: the out-of-scope diagnostic (MIR-1676) carries a Secret
+		// name of up to 253 chars plus the sentinel suffix; its word order
+		// keeps the namespace and remedy ahead of any cut.
+		Message: truncateMessage(err.Error()),
 	}
 }
 
