@@ -47,13 +47,13 @@ func selfSigned(t *testing.T) *x509.Certificate {
 func TestEvaluate(t *testing.T) {
 	t.Parallel()
 
-	subjects, helpers, control, err := loadFixtures()
+	set, err := loadFixtures()
 	if err != nil {
 		t.Fatalf("fixtures do not match their pins: %v", err)
 	}
 
-	if len(subjects) != 16 {
-		t.Fatalf("got %d impacted certificates, want 16", len(subjects))
+	if len(set.subjects) != 16 {
+		t.Fatalf("got %d impacted certificates, want 16", len(set.subjects))
 	}
 
 	unrelated := []*x509.Certificate{selfSigned(t)}
@@ -64,9 +64,9 @@ func TestEvaluate(t *testing.T) {
 		wantErr string
 	}{
 		{name: "bundle without either anchor passes", bundle: unrelated},
-		{name: "ECC root trusted fails", bundle: append([]*x509.Certificate{control[0]}, unrelated...), wantErr: "still trusts"},
-		{name: "AAA root trusted fails", bundle: append([]*x509.Certificate{control[1]}, unrelated...), wantErr: "still trusts"},
-		{name: "an impacted intermediate trusted directly fails", bundle: append([]*x509.Certificate{subjects[0]}, unrelated...), wantErr: "still trusts"},
+		{name: "ECC root trusted fails", bundle: append([]*x509.Certificate{set.control[0]}, unrelated...), wantErr: "still trusts"},
+		{name: "AAA root trusted fails", bundle: append([]*x509.Certificate{set.control[1]}, unrelated...), wantErr: "still trusts"},
+		{name: "an impacted intermediate trusted directly fails", bundle: append([]*x509.Certificate{set.subjects[0]}, unrelated...), wantErr: "still trusts"},
 	}
 
 	for _, tt := range tests {
@@ -75,7 +75,7 @@ func TestEvaluate(t *testing.T) {
 
 			var out bytes.Buffer
 
-			err := evaluate(tt.bundle, subjects, helpers, control, &out)
+			err := evaluate(tt.bundle, set, &out)
 
 			switch {
 			case tt.wantErr == "" && err != nil:
@@ -92,14 +92,16 @@ func TestEvaluate(t *testing.T) {
 func TestEvaluateRejectsBrokenControl(t *testing.T) {
 	t.Parallel()
 
-	subjects, helpers, _, err := loadFixtures()
+	set, err := loadFixtures()
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	set.control = nil
+
 	var out bytes.Buffer
 
-	err = evaluate([]*x509.Certificate{selfSigned(t)}, subjects, helpers, nil, &out)
+	err = evaluate([]*x509.Certificate{selfSigned(t)}, set, &out)
 	if err == nil || !strings.Contains(err.Error(), "positive control broken") {
 		t.Fatalf("got %v, want a positive control failure", err)
 	}
