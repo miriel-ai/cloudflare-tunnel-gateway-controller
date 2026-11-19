@@ -142,7 +142,9 @@ rules:
   - apiGroups: ["cf.k8s.lex.la"]
     resources: ["externalbackends"]
     verbs: ["get", "list", "watch"]
-  # Leader election
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # No leases rule, deliberately: deploy/controller/deployment.yaml runs one
+  # replica without --leader-elect, so the controller touches no Lease. If you
+  # enable leader election, grant leases through a Role + RoleBinding in the
+  # namespace --leader-election-namespace points at (see the chart's
+  # role-leases.yaml) — never cluster-wide, which would let a compromised
+  # controller take or delete other components' leader-election leases.
