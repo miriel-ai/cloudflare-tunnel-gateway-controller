@@ -140,12 +140,9 @@ func TestMissingSecretMessage_BoundaryLength(t *testing.T) {
 func TestSecretScopeClient_ConvertedErrorCarriesMarker(t *testing.T) {
 	t.Parallel()
 
-	inner := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
-		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
-			return errOutOfScopeGet
-		},
-	}).Build()
-	wrapped := &secretScopeClient{Client: inner}
+	// A real scoped cache produces the out-of-scope error (MIR-1691), so this
+	// pins the conversion against controller-runtime's actual message.
+	_, wrapped := newScopedSecretCacheAndClient(t, "listed")
 
 	err := wrapped.Get(context.Background(), types.NamespacedName{Namespace: "unlisted", Name: "edge-cert"}, &corev1.Secret{})
 	require.Error(t, err)
