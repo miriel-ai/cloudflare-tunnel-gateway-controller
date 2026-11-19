@@ -166,7 +166,8 @@ rules:
   - apiGroups: ["cf.k8s.lex.la"]
     resources: ["externalbackends"]
     verbs: ["get", "list", "watch"]
-  # Leader election
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # No leases rule here, deliberately: leader election only ever touches the
+  # lease in its configured namespace, so the grant is a namespaced Role
+  # rendered with it (role-leases.yaml). A cluster-wide Lease write would let
+  # a compromised controller take or delete other components' leader-election
+  # leases (kube-controller-manager, kube-scheduler, ...) and stall them.

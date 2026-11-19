@@ -170,8 +170,14 @@ rules:
   - apiGroups: ["cf.k8s.lex.la"]
     resources: ["externalbackends"]
     verbs: ["get", "list", "watch"]
+```
 
-  # Leader election
+Leader election is deliberately **not** in the ClusterRole: cluster-wide Lease write would let a compromised controller take or delete other components' leader-election leases (kube-controller-manager, kube-scheduler, ...) and stall them. The controller only ever touches the lease in its configured namespace, so when `leaderElection.enabled` is set the chart renders a namespaced Role and RoleBinding there instead (`role-leases.yaml`):
+
+```yaml
+# Rendered in the lease's namespace (leaderElection.namespace, defaulting to
+# the release namespace) only when leaderElection.enabled is true.
+rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
