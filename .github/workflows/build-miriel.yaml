@@ -1,0 +1,287 @@
+# Fork-only CI (miriel-ai): builds the controller and proxy images from the
+# `miriel` integration branch, publishes them to GHCR under an immutable tag
+# and signs them keyless. Never offered upstream. Independent of upstream's
+# release.yaml, which stays disabled in this fork.
+#
+# Signing identity (also in README.md, pinned by the Ilmarin mirror):
+#   issuer:   https://token.actions.githubusercontent.com
+#   identity: https://github.com/miriel-ai/cloudflare-tunnel-gateway-controller/.github/workflows/build-miriel.yaml@refs/heads/miriel
+name: Build miriel images
+
+on:
+  push:
+    branches: [miriel]
+  pull_request:
+    branches: [miriel]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A newer PR push supersedes the older build; a publish is never cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Nothing beyond reading the repository by default; the jobs below add what
+# they need. There is deliberately no AWS credential anywhere in this file.
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      sha: ${{ steps.meta.outputs.sha }}
+      publish: ${{ steps.meta.outputs.publish }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # The tag is miriel-<YYYYMMDD>-<sha7>: the UTC commit date and the first
+      # seven characters of the commit, so it names the commit and never moves.
+      # Only pushes and dispatches of the miriel branch publish: the signing
+      # identity is the workflow at refs/heads/miriel, and a dispatch from any
+      # other ref must not produce an image under that kind of tag.
+      - name: Compute tag
+        id: meta
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          sha="${PR_HEAD_SHA:-${GITHUB_SHA}}"
+          date="$(TZ=UTC git show -s --format=%cd --date=format-local:%Y%m%d "${GITHUB_SHA}")"
+          tag="miriel-${date}-${sha:0:7}"
+
+          publish=false
+          if [[ "${EVENT}" != "pull_request" && "${REF}" == "refs/heads/miriel" ]]; then
+            publish=true
+          fi
+
+          {
+            echo "tag=${tag}"
+            echo "sha=${sha}"
+            echo "publish=${publish}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag} sha=${sha} publish=${publish}"
+
+  build:
+    name: Build (${{ matrix.component }}/${{ matrix.arch }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    # packages: write is only exercised when `publish` is true; PR runs build
+    # without logging in or pushing.
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {component: controller, arch: amd64, runner: ubuntu-24.04, file: Containerfile, image: cloudflare-tunnel-gateway-controller}
+          - {component: controller, arch: arm64, runner: ubuntu-24.04-arm, file: Containerfile, image: cloudflare-tunnel-gateway-controller}
+          - {component: proxy, arch: amd64, runner: ubuntu-24.04, file: Containerfile.proxy, image: cloudflare-tunnel-gateway-controller-proxy}
+          - {component: proxy, arch: arm64, runner: ubuntu-24.04-arm, file: Containerfile.proxy, image: cloudflare-tunnel-gateway-controller-proxy}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Log in to GHCR
+        if: needs.prepare.outputs.publish == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The Containerfile pins ca-certificates and runs hack/emudhra-check in
+      # the builder stage, so a bundle that trusts the compromised eMudhra
+      # intermediates fails this step, with or without a push.
+      - name: Build
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: ./${{ matrix.file }}
+          platforms: linux/${{ matrix.arch }}
+          # Per-platform images are pushed by digest only; the merge job
+          # assembles and tags the multi-arch index. Attestation manifests are
+          # off so each digest is a plain single-platform image manifest.
+          provenance: false
+          sbom: false
+          outputs: ${{ needs.prepare.outputs.publish == 'true' && format('type=image,name={0}/{1}/{2},push-by-digest=true,name-canonical=true,push=true', env.REGISTRY, github.repository_owner, matrix.image) || 'type=cacheonly' }}
+          cache-from: type=gha,scope=miriel-${{ matrix.component }}-${{ matrix.arch }}
+          cache-to: type=gha,scope=miriel-${{ matrix.component }}-${{ matrix.arch }},mode=max
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.tag }}
+            REVISION=${{ needs.prepare.outputs.sha }}
+
+      - name: Export digest
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "unexpected digest: ${DIGEST}" >&2; exit 1; }
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: needs.prepare.outputs.publish == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: digests-${{ matrix.component }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish and sign (${{ matrix.component }})
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      # Keyless cosign signing: the OIDC token is the signing identity.
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {component: controller, image: cloudflare-tunnel-gateway-controller}
+          - {component: proxy, image: cloudflare-tunnel-gateway-controller-proxy}
+    env:
+      # The identity every signature is made, and checked, under.
+      CERT_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/build-miriel.yaml@refs/heads/miriel
+      CERT_OIDC_ISSUER: https://token.actions.githubusercontent.com
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: digests-${{ matrix.component }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # The tag is immutable: it is created once and never moved. Whether it
+      # exists is decided only by a registry answer of "not found"; any other
+      # error stops the job without writing. An existing tag is accepted when
+      # it already verifies under the signing identity, or when it is the
+      # index an earlier attempt of this same run created from exactly these
+      # platform images and failed to sign (so a retry can finish the job).
+      # Anything else is left alone and fails the job.
+      - name: Create tagged index
+        id: index
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # Exactly the two per-platform images this run built, one per arch.
+          cd /tmp/digests
+          refs=()
+          want=()
+          for digest in *; do
+            [[ "${digest}" =~ ^[0-9a-f]{64}$ ]] || { echo "unexpected digest file: ${digest}" >&2; exit 1; }
+            refs+=("${IMAGE}@sha256:${digest}")
+            want+=("sha256:${digest}")
+          done
+          [[ "${#refs[@]}" -eq 2 ]] || { echo "want 2 platform images, have ${#refs[@]}" >&2; exit 1; }
+          want_sorted="$(printf '%s\n' "${want[@]}" | sort)"
+
+          err="$(mktemp)"
+          if existing="$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{.Manifest.Digest}}' 2>"${err}")"; then
+            echo "${IMAGE}:${TAG} already exists (${existing}); not overwriting it."
+
+            if cosign verify \
+              --certificate-identity "${CERT_IDENTITY}" \
+              --certificate-oidc-issuer "${CERT_OIDC_ISSUER}" \
+              "${IMAGE}@${existing}" >/dev/null 2>&1; then
+              echo "It already verifies; nothing to do."
+              echo "digest=${existing}" >> "${GITHUB_OUTPUT}"
+              echo "needs_sign=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+
+            children="$(docker buildx imagetools inspect "${IMAGE}@${existing}" --raw | jq -r '.manifests[].digest' | sort)"
+            if [[ "${children}" != "${want_sorted}" ]]; then
+              echo "::error::${IMAGE}:${TAG} exists, is unsigned, and is not made of this run's images. Not overwriting or signing it."
+              exit 1
+            fi
+            echo "It is this run's own unsigned index; signing it."
+            echo "digest=${existing}" >> "${GITHUB_OUTPUT}"
+            echo "needs_sign=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          elif ! grep -qiE 'not found|manifest unknown|name unknown' "${err}"; then
+            cat "${err}" >&2
+            echo "::error::could not tell whether ${IMAGE}:${TAG} exists; not writing the tag."
+            exit 1
+          fi
+
+          docker buildx imagetools create --tag "${IMAGE}:${TAG}" "${refs[@]}"
+
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{.Manifest.Digest}}')"
+          platforms="$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}' | tr ' ' '\n' | sort | tr '\n' ' ')"
+          [[ "${platforms}" == "linux/amd64 linux/arm64 " ]] || { echo "unexpected platforms: ${platforms}" >&2; exit 1; }
+
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "needs_sign=true" >> "${GITHUB_OUTPUT}"
+
+      # Sign the index by digest, then verify it the way the Ilmarin mirror
+      # will, so a signature that would not pass fails this job.
+      - name: Sign and verify
+        if: steps.index.outputs.needs_sign == 'true'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+          DIGEST: ${{ steps.index.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+          cosign verify \
+            --certificate-identity "${CERT_IDENTITY}" \
+            --certificate-oidc-issuer "${CERT_OIDC_ISSUER}" \
+            "${IMAGE}@${DIGEST}" >/dev/null
+
+      - name: Summary
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          DIGEST: ${{ steps.index.outputs.digest }}
+        run: |
+          {
+            echo "### ${{ matrix.component }}"
+            echo
+            echo "- image: \`${IMAGE}:${TAG}\`"
+            echo "- digest: \`${DIGEST}\`"
+            echo "- signed as: \`${CERT_IDENTITY}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"

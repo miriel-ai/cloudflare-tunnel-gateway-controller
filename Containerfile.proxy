@@ -3,9 +3,13 @@ FROM docker.io/library/golang:1.27-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b6
 ARG VERSION=development
 ARG REVISION=development
 
+# The CA bundle that ends up in the final image comes from this package, so
+# its version is pinned (Alpine 3.24, the release of the golang base above).
+# Bump it deliberately: Alpine drops old package versions from the index, so
+# a stale pin fails the build instead of silently shipping an older bundle.
 # hadolint ignore=DL3018
 RUN echo 'nobody:x:65534:65534:Nobody:/:' > /tmp/passwd && \
-    apk add --no-cache ca-certificates
+    apk add --no-cache ca-certificates=20261020-r0
 
 WORKDIR /build
 
@@ -16,6 +20,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 COPY . .
+
+# Fail the build if the bundle still lets the compromised eMudhra (emSign)
+# intermediates chain to a trusted root. See hack/emudhra-check.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 go run ./hack/emudhra-check -bundle /etc/ssl/certs/ca-certificates.crt
 
 # Mount the BuildKit cache for the Go build cache and module cache so
 # successive CI builds reuse compiled artifacts (issue #257). The mount

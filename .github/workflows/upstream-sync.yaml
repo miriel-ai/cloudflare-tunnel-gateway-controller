@@ -1,0 +1,90 @@
+# Fork-only CI (miriel-ai): keeps `master` a fast-forward mirror of
+# lexfrei/cloudflare-tunnel-gateway-controller and opens a PR that merges it
+# into `miriel`. Never force-pushes; the PR is merged with a merge commit.
+#
+# Runs on GITHUB_TOKEN. Three things in this repository's configuration limit
+# what that token can do, and this job fails loudly rather than work around
+# them (see the PR description):
+#   - it cannot push commits that change .github/workflows/* (no `workflows`
+#     permission), so a sync fails while upstream has workflow changes;
+#   - it can only open a PR if "Allow GitHub Actions to create and approve
+#     pull requests" is on, which it is not at the time of writing;
+#   - scheduled runs only fire from the default branch (master), not miriel.
+name: Upstream sync
+
+on:
+  schedule:
+    - cron: '17 5 * * 1' # Mondays 05:17 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report what would happen without pushing or opening a PR
+        type: boolean
+        default: false
+  # Registers the workflow on a non-default branch (a dispatch needs a prior
+  # run) and syncs once when the workflow itself changes.
+  push:
+    branches: [miriel]
+    paths:
+      - .github/workflows/upstream-sync.yaml
+      - hack/upstream-sync.sh
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_URL: https://github.com/lexfrei/cloudflare-tunnel-gateway-controller.git
+  BASE_BRANCH: miriel
+  MIRROR_BRANCH: master
+
+jobs:
+  sync:
+    name: Sync master and open a PR into miriel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Fast-forward master to upstream
+        id: sync
+        env:
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: ./hack/upstream-sync.sh
+
+      # The PR's head is master itself, so a later sync that moves master
+      # updates the open PR instead of opening another one.
+      - name: Open a PR into miriel
+        if: steps.sync.outputs.needs_pr == 'true' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AHEAD: ${{ steps.sync.outputs.ahead }}
+          SHA: ${{ steps.sync.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          existing="$(gh pr list --repo "${GITHUB_REPOSITORY}" --base "${BASE_BRANCH}" --head "${MIRROR_BRANCH}" --state open --json number,isCrossRepository --jq '[.[] | select(.isCrossRepository | not)][0].number // empty')"
+          if [[ -n "${existing}" ]]; then
+            echo "PR #${existing} already merges ${MIRROR_BRANCH} into ${BASE_BRANCH}; it follows ${MIRROR_BRANCH}, nothing to open."
+            exit 0
+          fi
+
+          body="Merges upstream \`lexfrei/cloudflare-tunnel-gateway-controller\` \`master\` (${SHA:0:12}) into \`${BASE_BRANCH}\`: ${AHEAD} commit(s) not yet in \`${BASE_BRANCH}\`.
+
+          Opened by .github/workflows/upstream-sync.yaml. Merge with a merge commit; do not force-push or rebase."
+
+          if ! gh pr create --repo "${GITHUB_REPOSITORY}" \
+            --base "${BASE_BRANCH}" --head "${MIRROR_BRANCH}" \
+            --title "chore: sync upstream master into ${BASE_BRANCH}" \
+            --body "${body}"; then
+            echo "::error::could not open the PR. If the message above says GitHub Actions is not permitted to create pull requests, open it by hand: https://github.com/${GITHUB_REPOSITORY}/compare/${BASE_BRANCH}...${MIRROR_BRANCH}?expand=1"
+            exit 1
+          fi

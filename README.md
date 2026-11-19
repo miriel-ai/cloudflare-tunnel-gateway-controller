@@ -29,6 +29,37 @@ Expose in-cluster services through a Cloudflare Tunnel using standard Gateway AP
 
 > **Warning:** The controller assumes **exclusive ownership** of the tunnel configuration. It removes any ingress rules not managed by HTTPRoute/GRPCRoute resources. Do not point it at a tunnel that has manually configured routes or is shared with other systems. (This applies wherever the controller holds a credential for the tunnel; a tunnel whose plane has none — the shared plane in no-API mode — is never touched.)
 
+## miriel-ai fork: images
+
+This fork builds its own images from the `miriel` branch with
+[`.github/workflows/build-miriel.yaml`](.github/workflows/build-miriel.yaml). They do not depend on upstream releases, and `release.yaml` stays disabled.
+
+| Component | Image |
+|---|---|
+| controller | `ghcr.io/miriel-ai/cloudflare-tunnel-gateway-controller` |
+| proxy | `ghcr.io/miriel-ai/cloudflare-tunnel-gateway-controller-proxy` |
+
+- **Tags:** `miriel-<YYYYMMDD>-<sha7>` (UTC commit date and the first 7 characters of the commit). A tag is created once and never moved. There are no floating tags.
+- **Platforms:** `linux/amd64` and `linux/arm64`, built natively and merged into one index.
+- **CA bundle:** `ca-certificates` is pinned in `Containerfile` and `Containerfile.proxy`. The build runs [`hack/emudhra-check`](hack/emudhra-check/main.go), which fails if any of the 8 compromised eMudhra (emSign) intermediates, or their 8 Sectigo cross-signs, still chains to a root in the bundle. Bump the pin deliberately: Alpine drops old package versions.
+- **Signature:** cosign keyless, on the multi-arch index digest. Verify with this exact identity and issuer:
+
+  ```bash
+  cosign verify \
+    --certificate-identity 'https://github.com/miriel-ai/cloudflare-tunnel-gateway-controller/.github/workflows/build-miriel.yaml@refs/heads/miriel' \
+    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+    ghcr.io/miriel-ai/cloudflare-tunnel-gateway-controller@sha256:<digest>
+  ```
+
+  - **Certificate identity:** `https://github.com/miriel-ai/cloudflare-tunnel-gateway-controller/.github/workflows/build-miriel.yaml@refs/heads/miriel`
+  - **OIDC issuer:** `https://token.actions.githubusercontent.com`
+
+  Only a push or dispatch of the `miriel` branch publishes, so a valid signature always carries the `refs/heads/miriel` identity. If the workflow file is renamed, this identity changes and consumers that pin it must be updated.
+
+### Upstream sync
+
+[`upstream-sync.yaml`](.github/workflows/upstream-sync.yaml) (weekly, and on dispatch) fast-forwards `master` to `lexfrei/cloudflare-tunnel-gateway-controller` and, when `miriel` lacks upstream commits, opens a PR from `master` into `miriel`. Merge that PR with a merge commit. The job never force-pushes and refuses to touch a `master` that has diverged from upstream.
+
 ## L7 Proxy
 
 The controller runs an in-process L7 reverse proxy inside the cloudflared process via the `OverrideProxy` hook (using a [fork of cloudflared](https://github.com/miriel-ai/cloudflared)). All tunnel traffic is intercepted by the proxy, which applies Gateway API routing rules — hostname, path, header, query and method matching, filters, and weighted backend selection — before forwarding to backends. The tunnel ingress document the controller writes through the Cloudflare API only feeds the Cloudflare dashboard; request routing is handled entirely by the proxy, so HTTPRoute features work end-to-end regardless of Cloudflare Tunnel's native capabilities.

@@ -22,6 +22,8 @@ on:
       - hack/probe-ttlsh.sh
       - hack/release-changelog.sh
       - hack/release-changelog_test.sh
+      - hack/upstream-sync.sh
+      - hack/upstream-sync_test.sh
       - .github/workflows/pr.yaml
       - .github/workflows/pr-privileged.yaml
       # labels.yml is included so the drift-pin tests
@@ -52,6 +54,8 @@ on:
       - hack/probe-ttlsh.sh
       - hack/release-changelog.sh
       - hack/release-changelog_test.sh
+      - hack/upstream-sync.sh
+      - hack/upstream-sync_test.sh
       - .github/workflows/pr.yaml
       - .github/workflows/pr-privileged.yaml
       # labels.yml is included so the drift-pin tests
@@ -151,3 +155,15 @@ jobs:
       # Pins the commit-subject parser both changelog steps in release.yaml call.
       - name: Run release-changelog tests
         run: bash hack/release-changelog_test.sh
+
+  upstream-sync:
+    name: Upstream sync script test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Runs the fork's upstream-sync.sh against local repositories: no-op,
+      # fast-forward, dry run, and a diverged master that must be refused.
+      - name: Run upstream-sync tests
+        run: bash hack/upstream-sync_test.sh
